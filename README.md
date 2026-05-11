@@ -170,7 +170,7 @@ git push
 
 ```bash
 git checkout main # 也可以用 git switch main
-git pull orgin main
+git pull origin main
 git checkout <Your branch> # 也可以用 git switch <Your branch>
 git merge main
 ```
