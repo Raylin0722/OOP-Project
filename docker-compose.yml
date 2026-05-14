@@ -37,5 +37,3 @@ services:
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       - redis
-    # 這裡先預留啟動指令，等你的 manage.py 準備好後取消註解即可
-    command: python manage.py runserver 0.0.0.0:8000
