@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import AuthPage from './views/AuthPage.vue';
 import LobbyPage from './views/LobbyPage.vue';
+import GameBoardPage from './views/GameBoardPage.vue';
 
 const routes = [
   {
@@ -11,6 +12,11 @@ const routes = [
   {
     path: '/lobby',
     component: LobbyPage,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/game-ui',
+    component: GameBoardPage,
     meta: { requiresAuth: true },
   },
   {
