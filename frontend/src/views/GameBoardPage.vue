@@ -1,9 +1,17 @@
 ﻿<script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
+import cardBackUrl from '../assets/source/card-back.png';
+import gameRoomUrl from '../assets/pictures/game_room.png';
+import roleFortuneTellerUrl from '../assets/pictures/c1_fortune_teller.png';
+import roleWizardUrl from '../assets/pictures/c2_wizard.png';
+import roleScoutUrl from '../assets/pictures/c3_scout.png';
+import roleQueenUrl from '../assets/pictures/c4_queen.png';
 
 const TURN_SECONDS = 30;
 const API_BASE = `http://${window.location.hostname}:8000/api`;
+const cardImages = import.meta.glob('../assets/pictures/[rbgyf]*.png', { eager: true, import: 'default' });
+const gameRoomBackground = `url("${gameRoomUrl}")`;
 
 const route = useRoute();
 const roomId = ref(String(route.query.room || '449102'));
@@ -17,6 +25,7 @@ const topCardCount = ref(6);
 const leftCardCount = ref(7);
 const rightCardCount = ref(8);
 const currentDiscardCard = ref('黃 7');
+const currentColor = ref('黃');
 const turnDirection = ref('順時針');
 const playerCards = ref([
   '紅 1',
@@ -24,16 +33,22 @@ const playerCards = ref([
   '黃 5',
   '綠 7',
   '紅 9',
-  '跳過',
+  '紅 跳過',
   '藍 2',
-  '反轉',
+  '藍 反轉',
   '黃 8',
   '綠 4',
-  '+2',
+  '綠 +2',
   '紅 6',
   '萬用',
   '藍 9',
 ]);
+const roleCards = {
+  player: { name: '占卜師', image: roleFortuneTellerUrl },
+  top: { name: '魔法師', image: roleWizardUrl },
+  left: { name: '皇后', image: roleQueenUrl },
+  right: { name: '偵查者', image: roleScoutUrl },
+};
 
 const selectedCard = computed(() => {
   if (selectedCardIndex.value === null) {
@@ -43,6 +58,19 @@ const selectedCard = computed(() => {
   return {
     index: selectedCardIndex.value,
     name: playerCards.value[selectedCardIndex.value],
+  };
+});
+
+const currentColorStyle = computed(() => {
+  const colorMap = {
+    紅: '#dc2626',
+    藍: '#2563eb',
+    黃: '#facc15',
+    綠: '#16a34a',
+  };
+
+  return {
+    backgroundColor: colorMap[currentColor.value] || '#f8fafc',
   };
 });
 
@@ -69,6 +97,58 @@ function displayCardLabel(cardName) {
   return specialMap[cardName] || cardName;
 }
 
+function colorFromCard(cardName) {
+  const color = String(cardName).trim().split(/\s+/)[0];
+  return ['紅', '藍', '黃', '綠'].includes(color) ? color : currentColor.value;
+}
+
+function imageStyle(imageUrl) {
+  return {
+    '--image-url': `url("${imageUrl}")`,
+  };
+}
+
+function cardAssetUrl(cardName) {
+  const colorMap = {
+    紅: 'r',
+    藍: 'b',
+    黃: 'y',
+    綠: 'g',
+  };
+  const actionMap = {
+    跳過: 'skip',
+    反轉: 'reverse',
+    '+2': '+2',
+  };
+  const normalized = String(cardName).trim();
+
+  if (normalized === '萬用') {
+    return cardImages['../assets/pictures/f_change_color.png'];
+  }
+
+  if (normalized === '抽四') {
+    return cardImages['../assets/pictures/f_change_color+4.png'];
+  }
+
+  const parts = normalized.split(/\s+/);
+  if (parts.length >= 2 && colorMap[parts[0]]) {
+    const value = parts.slice(1).join('');
+    const colorPrefix = colorMap[parts[0]];
+    const filename = actionMap[value] ? `${colorPrefix}_${actionMap[value]}` : `${colorPrefix}${value}`;
+    return cardImages[`../assets/pictures/${filename}.png`];
+  }
+
+  if (actionMap[normalized]) {
+    return cardImages[`../assets/pictures/f_${actionMap[normalized]}.png`];
+  }
+
+  return null;
+}
+
+function cardImageStyle(cardName) {
+  const imageUrl = cardAssetUrl(cardName);
+  return imageUrl ? imageStyle(imageUrl) : {};
+}
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -129,10 +209,15 @@ function applyGameStatePayload(payload) {
 
   if (payload.discard?.top_card) {
     currentDiscardCard.value = payload.discard.top_card;
+    currentColor.value = colorFromCard(payload.discard.top_card);
   }
 
   if (payload.turn?.direction) {
     turnDirection.value = payload.turn.direction;
+  }
+
+  if (payload.turn?.color || payload.turn?.current_color) {
+    currentColor.value = payload.turn.color || payload.turn.current_color;
   }
 }
 
@@ -146,7 +231,7 @@ function simulateBackendDeckPayload() {
       max_members: 4,
     },
     player: {
-      hand: ['紅 2', '紅 +2', '藍 1', '藍 8', '黃 4', '黃 跳過', '綠 0', '綠 9', '反轉', '萬用', '抽四', '紅 7'],
+      hand: ['紅 2', '紅 +2', '藍 1', '藍 8', '黃 4', '黃 跳過', '綠 0', '綠 9', '黃 反轉', '萬用', '抽四', '紅 7'],
     },
     opponents: {
       top: { card_count: 5 },
@@ -158,6 +243,7 @@ function simulateBackendDeckPayload() {
     },
     turn: {
       direction: '逆時針',
+      color: '綠',
     },
   });
 }
@@ -309,39 +395,54 @@ onBeforeUnmount(() => {
     </div>
 
     <section class="opponent opponent-top" aria-label="用戶A">
-      <div class="role-card">角色</div>
+      <div class="role-panel">
+        <div class="role-card image-fill" :style="imageStyle(roleCards.top.image)" aria-label="角色"></div>
+        <strong class="role-name">{{ roleCards.top.name }}</strong>
+      </div>
       <div class="opponent-name">用戶A</div>
       <div class="opponent-card-summary">
-        <div class="game-card card-back">卡片</div>
+        <div class="game-card card-back image-fill" :style="imageStyle(cardBackUrl)" aria-label="卡背"></div>
         <span class="card-count-badge">{{ topCardCount }}</span>
       </div>
     </section>
 
     <section class="opponent opponent-left" aria-label="用戶D">
-      <div class="role-card">角色</div>
+      <div class="role-panel">
+        <div class="role-card image-fill" :style="imageStyle(roleCards.left.image)" aria-label="角色"></div>
+        <strong class="role-name">{{ roleCards.left.name }}</strong>
+      </div>
       <div class="opponent-name">用戶D</div>
       <div class="opponent-card-summary">
-        <div class="game-card side-summary-card">卡片</div>
+        <div class="game-card side-summary-card side-card-horizontal image-fill" :style="imageStyle(cardBackUrl)" aria-label="卡背"></div>
         <span class="card-count-badge">{{ leftCardCount }}</span>
       </div>
     </section>
 
     <section class="opponent opponent-right" aria-label="用戶B">
-      <div class="role-card">角色</div>
+      <div class="role-panel">
+        <div class="role-card image-fill" :style="imageStyle(roleCards.right.image)" aria-label="角色"></div>
+        <strong class="role-name">{{ roleCards.right.name }}</strong>
+      </div>
       <div class="opponent-name">用戶B</div>
       <div class="opponent-card-summary">
-        <div class="game-card side-summary-card">卡片</div>
+        <div class="game-card side-summary-card side-card-horizontal image-fill" :style="imageStyle(cardBackUrl)" aria-label="卡背"></div>
         <span class="card-count-badge">{{ rightCardCount }}</span>
       </div>
     </section>
 
     <section class="table-center" aria-label="牌桌中央">
       <div class="deck-stack" aria-label="抽牌堆">
-        <div class="game-card deck-card">卡片</div>
+        <div class="game-card deck-card image-fill" :style="imageStyle(cardBackUrl)" aria-label="抽牌堆"></div>
       </div>
 
       <div class="discard-pile" aria-label="棄牌堆">
-        <div class="game-card pile-card face-card">{{ displayCardLabel(currentDiscardCard) }}</div>
+        <div
+          class="game-card pile-card face-card"
+          :class="{ 'image-fill': cardAssetUrl(currentDiscardCard) }"
+          :style="cardImageStyle(currentDiscardCard)"
+        >
+          <span class="card-label">{{ displayCardLabel(currentDiscardCard) }}</span>
+        </div>
       </div>
 
       <div class="turn-panel">
@@ -351,7 +452,10 @@ onBeforeUnmount(() => {
         </div>
         <div class="turn-row">
           <span>當前顏色</span>
-          <span class="color-dot"></span>
+          <strong class="current-color">
+            <span class="color-dot" :style="currentColorStyle"></span>
+            {{ currentColor }}
+          </strong>
         </div>
         <div class="turn-row">
           <span>當前玩家</span>
@@ -366,7 +470,10 @@ onBeforeUnmount(() => {
 
     <section class="player-area" aria-label="玩家手牌">
       <div class="player-info">
-        <div class="role-card">角色</div>
+        <div class="role-panel">
+          <div class="role-card image-fill" :style="imageStyle(roleCards.player.image)" aria-label="角色"></div>
+          <strong class="role-name">{{ roleCards.player.name }}</strong>
+        </div>
         <div class="opponent-name">你（玩家）</div>
         <div class="card-count">{{ playerCards.length }}張</div>
       </div>
@@ -375,14 +482,14 @@ onBeforeUnmount(() => {
           v-for="(card, index) in playerCards"
           :key="`${card}-${index}`"
           class="game-card player-card"
-          :class="{ 'is-selected': selectedCardIndex === index }"
+          :class="{ 'is-selected': selectedCardIndex === index, 'image-fill': cardAssetUrl(card) }"
           :aria-pressed="selectedCardIndex === index"
           :data-selected="selectedCardIndex === index ? 'true' : 'false'"
-          :style="playerCardStyle(index)"
+          :style="{ ...playerCardStyle(index), ...cardImageStyle(card) }"
           type="button"
           @click="handleCardClick(index)"
         >
-          {{ displayCardLabel(card) }}
+          <span class="card-label">{{ displayCardLabel(card) }}</span>
         </button>
       </div>
     </section>
@@ -399,19 +506,17 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .game-board-page {
-  --card-width: 64px;
-  --card-height: 96px;
+  --card-width: 84px;
+  --card-height: calc(var(--card-width) * 7 / 5);
   position: relative;
   min-height: 100vh;
   overflow: hidden;
   color: #f8fafc;
   background:
-    radial-gradient(circle at 10% 20%, rgba(255, 255, 255, 0.75) 0 1px, transparent 2px),
-    radial-gradient(circle at 28% 62%, rgba(255, 255, 255, 0.55) 0 1px, transparent 2px),
-    radial-gradient(circle at 72% 24%, rgba(255, 255, 255, 0.7) 0 1px, transparent 2px),
-    radial-gradient(circle at 91% 76%, rgba(255, 255, 255, 0.55) 0 1px, transparent 2px),
-    #080312;
-  background-size: 90px 90px, 130px 130px, 110px 110px, 150px 150px, auto;
+    linear-gradient(rgba(8, 3, 18, 0.12), rgba(8, 3, 18, 0.34)),
+    v-bind(gameRoomBackground);
+  background-position: center;
+  background-size: cover;
   font-family: "Microsoft JhengHei", "PingFang TC", system-ui, sans-serif;
 }
 
@@ -495,35 +600,69 @@ onBeforeUnmount(() => {
   top: 30px;
   left: 50%;
   transform: translateX(-50%);
-  grid-template-columns: 80px auto;
+  grid-template-columns: 132px auto;
   grid-template-rows: repeat(3, auto);
-  column-gap: 26px;
+  column-gap: 18px;
   align-items: start;
 }
 
-.opponent-top .role-card {
+.opponent-top .role-panel {
   grid-row: 1 / 4;
 }
 
 .opponent-left {
-  top: 136px;
+  top: 124px;
   left: 20px;
 }
 
 .opponent-right {
-  top: 136px;
+  top: 124px;
   right: 20px;
 }
 
+.role-panel {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+}
+
 .role-card {
-  width: 68px;
-  height: 68px;
+  width: 110px;
+  height: calc(110px * 1771 / 1271);
   display: grid;
   place-items: center;
-  border: 1px solid rgba(248, 250, 252, 0.94);
-  border-radius: 8px;
-  background: rgba(5, 2, 16, 0.72);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   font-size: 18px;
+}
+
+.image-fill {
+  overflow: hidden;
+  color: transparent;
+  background-image: var(--image-url);
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  text-shadow: none;
+}
+
+.role-card.image-fill {
+  background-size: contain;
+  background-color: transparent;
+}
+
+.role-name {
+  min-width: 76px;
+  max-width: 116px;
+  padding: 4px 8px;
+  border: 1px solid rgba(248, 250, 252, 0.86);
+  border-radius: 8px;
+  color: #f8fafc;
+  background: rgba(5, 2, 16, 0.78);
+  font-size: 14px;
+  line-height: 1.2;
+  text-align: center;
 }
 
 .opponent-name,
@@ -535,6 +674,13 @@ onBeforeUnmount(() => {
 .opponent-card-summary {
   position: relative;
   width: max-content;
+}
+
+.opponent-left .opponent-card-summary,
+.opponent-right .opponent-card-summary {
+  height: var(--card-height);
+  display: grid;
+  place-items: center;
 }
 
 .card-count-badge {
@@ -562,7 +708,7 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(248, 250, 252, 0.92);
   border-radius: 7px;
   color: #f8fafc;
-  background: rgba(5, 2, 16, 0.72);
+  background-color: rgba(5, 2, 16, 0.72);
   font-size: 15px;
   text-align: center;
 }
@@ -570,6 +716,16 @@ onBeforeUnmount(() => {
 .side-summary-card {
   width: var(--card-width);
   height: var(--card-height);
+}
+
+.side-card-horizontal {
+  width: var(--card-height);
+  height: var(--card-width);
+}
+
+.side-card-horizontal + .card-count-badge {
+  top: -12px;
+  right: -14px;
 }
 
 .table-center {
@@ -586,31 +742,10 @@ onBeforeUnmount(() => {
   left: calc(50% - 112px);
 }
 
-.deck-card::before,
-.deck-card::after {
-  content: "";
-  position: absolute;
-  width: var(--card-width);
-  height: var(--card-height);
-  border: 1px solid rgba(248, 250, 252, 0.72);
-  border-radius: 7px;
-  background: rgba(5, 2, 16, 0.72);
-}
-
 .deck-card {
   position: relative;
   width: var(--card-width);
   height: var(--card-height);
-}
-
-.deck-card::before {
-  left: -4px;
-  top: 4px;
-}
-
-.deck-card::after {
-  left: -7px;
-  top: 8px;
 }
 
 .discard-pile {
@@ -663,19 +798,26 @@ onBeforeUnmount(() => {
   border-radius: 50%;
 }
 
+.current-color {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+}
+
 .player-area {
   left: 50%;
   width: min(920px, calc(100vw - 300px));
-  height: 178px;
+  height: 198px;
   transform: translateX(-50%);
-  bottom: 98px;
+  bottom: 88px;
   display: block;
 }
 
 .player-info {
   position: absolute;
   left: 0;
-  bottom: 0;
+  bottom: -18px;
   display: grid;
   justify-items: center;
   gap: 6px;
@@ -708,9 +850,29 @@ onBeforeUnmount(() => {
   line-height: 1;
 }
 
+.face-card.image-fill,
+.player-card.image-fill {
+  align-items: stretch;
+  justify-items: stretch;
+  padding: 0;
+}
+
+.card-label {
+  color: inherit;
+}
+
+.image-fill .card-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 .player-card.is-selected {
   border-color: #fde68a;
-  background: rgba(30, 64, 175, 0.95);
+  background-color: rgba(30, 64, 175, 0.95);
   box-shadow: 0 0 0 3px rgba(253, 230, 138, 0.95), 0 14px 26px rgba(0, 0, 0, 0.42);
   transform: translateX(calc(-50% + var(--fan-offset))) rotate(var(--rotation)) translateY(-30px) scale(1.04);
 }
@@ -740,11 +902,11 @@ onBeforeUnmount(() => {
 .tool-btn:hover,
 .action-btn:hover:not(:disabled),
 .player-card:hover {
-  background: rgba(38, 28, 66, 0.9);
+  background-color: rgba(38, 28, 66, 0.9);
 }
 
 .player-card.is-selected:hover {
-  background: rgba(30, 64, 175, 0.95);
+  background-color: rgba(30, 64, 175, 0.95);
 }
 
 @media (max-width: 900px) {
@@ -771,7 +933,7 @@ onBeforeUnmount(() => {
 
   .player-area {
     width: calc(100vw - 28px);
-    grid-template-columns: 72px 1fr;
+    grid-template-columns: 108px 1fr;
     bottom: 110px;
   }
 
