@@ -19,6 +19,8 @@ const roomTitle = ref('娛樂房・4人');
 const isTestMode = computed(() => route.query.test === '1');
 const selectedCardIndex = ref(null);
 const remainingSeconds = ref(TURN_SECONDS);
+const showSettingsModal = ref(false);
+const boardScale = ref(1);
 let timerId = null;
 
 const topCardCount = ref(6);
@@ -371,6 +373,7 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="game-board-page">
+    <div class="game-board-stage">
     <div class="room-panel" aria-label="房間資訊">
       <div class="room-row">
         <span>房間ID：{{ roomId }}</span>
@@ -501,10 +504,41 @@ onBeforeUnmount(() => {
       <button class="action-btn" type="button" @click="handleDrawCard">抽牌</button>
       <button class="action-btn" type="button" @click="handleUseSkill">技能</button>
     </aside>
+    </div>
+
+    <div v-if="showSettingsModal" class="settings-backdrop" @click.self="showSettingsModal = false">
+      <section class="settings-modal" aria-label="設定">
+        <header class="settings-header">
+          <h2>設定</h2>
+          <button class="settings-close" type="button" @click="showSettingsModal = false">×</button>
+        </header>
+
+        <label class="scale-field">
+          <span>縮放比例</span>
+          <input v-model.number="boardScale" type="number" min="0.5" max="1.4" step="0.05" />
+        </label>
+
+        <input v-model.number="boardScale" class="scale-slider" type="range" min="0.5" max="1.4" step="0.05" />
+      </section>
+    </div>
   </main>
 </template>
 
 <style scoped>
+.game-board-page {
+  --card-width: 64px;
+  --card-height: 96px;
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.game-board-stage {
+  display: contents;
+}
+
 .game-board-page {
   --card-width: 84px;
   --card-height: calc(var(--card-width) * 7 / 5);
@@ -807,7 +841,7 @@ onBeforeUnmount(() => {
 
 .player-area {
   left: 50%;
-  width: min(920px, calc(100vw - 300px));
+  width: 920px;
   height: 198px;
   transform: translateX(-50%);
   bottom: 88px;
@@ -907,6 +941,72 @@ onBeforeUnmount(() => {
 
 .player-card.is-selected:hover {
   background-color: rgba(30, 64, 175, 0.95);
+}
+
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.settings-modal {
+  width: min(340px, calc(100vw - 32px));
+  display: grid;
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid rgba(248, 250, 252, 0.8);
+  border-radius: 8px;
+  color: #f8fafc;
+  background: rgba(8, 3, 18, 0.96);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.settings-close {
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(248, 250, 252, 0.7);
+  border-radius: 8px;
+  color: #f8fafc;
+  background: transparent;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.scale-field {
+  display: grid;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.scale-field input {
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid rgba(248, 250, 252, 0.72);
+  border-radius: 8px;
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 16px;
+}
+
+.scale-slider {
+  width: 100%;
 }
 
 @media (max-width: 900px) {

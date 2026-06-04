@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import PlayerInfoCard from '../components/PlayerInfoCard.vue';
 import PlayerStatsPanel from '../components/PlayerStatsPanel.vue';
 import LobbyActionButtons from '../components/LobbyActionButtons.vue';
+import hallImage from '../assets/pictures/hall.png';
 
 const API_BASE = `http://${window.location.hostname}:8000/api`;
 const WS_BASE = `ws://${window.location.hostname}:8000/ws`;
@@ -259,7 +260,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="lobby-page">
+  <main class="lobby-page" :style="{ '--lobby-bg-image': `url(${hallImage})` }">
     <header class="lobby-header">
       <div class="header-content">
         <h1>Game Lobby</h1>
@@ -348,7 +349,10 @@ onBeforeUnmount(() => {
 <style scoped>
 .lobby-page {
   min-height: 100vh;
-  background: #eef2f7;
+  background:
+    linear-gradient(rgba(15, 23, 42, 0.42), rgba(15, 23, 42, 0.5)),
+    var(--lobby-bg-image) center / contain no-repeat fixed;
+  background-color: #0f172a;
   display: flex;
   flex-direction: column;
 }
