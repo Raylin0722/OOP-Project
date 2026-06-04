@@ -58,7 +58,6 @@ class SkillContext(Protocol):
         ...
 
 
-# ==================== 抽象技能基類 ====================
 
 class SkillBehavior(ABC):
     # 定義技能的基本行為
