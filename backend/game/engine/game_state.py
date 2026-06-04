@@ -60,6 +60,11 @@ class GameState:
     # 獲勝者
     winners: List[Dict[str, Any]]  # [{'player_id': str, 'rank': int}, ...]
 
+    # 時間限制 (15分鐘)
+    game_start_time: Optional[str]  # ISO格式時間
+    time_limit_seconds: int  # 時間限制(秒)
+    remaining_seconds: Optional[int]  # 剩餘秒數
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -83,6 +88,10 @@ class GameState:
             for player, rank in engine.winners
         ]
 
+        # 計算剩餘時間
+        remaining_time = engine.get_remaining_time()
+        remaining_seconds = int(remaining_time.total_seconds()) if remaining_time else None
+
         return GameState(
             phase=engine.phase.value,
             turn_count=engine.turn_count,
@@ -97,6 +106,9 @@ class GameState:
             discard_pile_top=discard_top,
             players=player_states,
             winners=winners_list,
+            game_start_time=engine.game_start_time.isoformat() if engine.game_start_time else None,
+            time_limit_seconds=int(engine.game_time_limit.total_seconds()),
+            remaining_seconds=remaining_seconds,
         )
 
 
