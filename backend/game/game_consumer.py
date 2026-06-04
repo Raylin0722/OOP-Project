@@ -137,6 +137,18 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self.send_error('Game not started')
             return
 
+        # [15分鐘超時機制] 檢查遊戲是否超時
+        if engine.check_timeout():
+            result = engine.force_end_game()
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    'type': 'game_ended',
+                    'payload': result
+                }
+            )
+            return
+
         # 驗證是否為當前玩家
         current_player = engine.get_current_player()
         if str(current_player.player_id) != str(self.user.id):
@@ -217,6 +229,18 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self.send_error('Game not started')
             return
 
+        # [15分鐘超時機制] 檢查遊戲是否超時
+        if engine.check_timeout():
+            result = engine.force_end_game()
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    'type': 'game_ended',
+                    'payload': result
+                }
+            )
+            return
+
         # 驗證是否為當前玩家
         current_player = engine.get_current_player()
         if str(current_player.player_id) != str(self.user.id):
@@ -254,6 +278,18 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self.send_error('Game not started')
             return
 
+        # [15分鐘超時機制] 檢查遊戲是否超時
+        if engine.check_timeout():
+            result = engine.force_end_game()
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    'type': 'game_ended',
+                    'payload': result
+                }
+            )
+            return
+
         # 驗證是否為當前玩家
         current_player = engine.get_current_player()
         if str(current_player.player_id) != str(self.user.id):
@@ -270,9 +306,9 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self.send_error('Cannot use skill now')
             return
 
-        # 執行技能
         skill_params = data.get('params', {})
-        result = current_player.use_skill(engine, **skill_params)
+        merged_params = {**skill_check_params, **skill_params}
+        result = current_player.use_skill(engine, **merged_params)
 
         # 廣播技能使用結果
         await self.channel_layer.group_send(
@@ -323,6 +359,16 @@ class GameConsumer(AsyncWebsocketConsumer):
         }))
 
         # 發送更新的遊戲狀態
+        await self._send_game_state()
+
+    async def game_ended(self, event):
+        # 遊戲結束事件 (15分鐘超時或正常結束)
+        await self.send(text_data=json.dumps({
+            'type': 'game_ended',
+            **event['payload']
+        }))
+
+        # 發送最終遊戲狀態
         await self._send_game_state()
 
     # 輔助方法

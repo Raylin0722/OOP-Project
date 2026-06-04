@@ -449,7 +449,10 @@
                     log(`玩家 ${data.player_id} 抽了 ${data.count} 張牌`, 'info');
                     break;
                 case 'skill_used':
-                    log('技能使用成功', 'success');
+                    log(`技能使用成功: ${data.message || ''}`, 'success');
+                    if (data.from_player && data.to_player) {
+                        log(`  ${data.from_player} → ${data.to_player}`, 'info');
+                    }
                     break;
                 case 'error':
                     log(`錯誤: ${data.message}`, 'error');
@@ -459,6 +462,14 @@
 
         function updateGameState(state) {
             if (!state) return;
+
+            // 記錄當前玩家變化
+            const oldCurrentPlayer = gameState ? gameState.players[gameState.current_player_index]?.name : null;
+            const newCurrentPlayer = state.players[state.current_player_index]?.name;
+
+            if (oldCurrentPlayer && newCurrentPlayer && oldCurrentPlayer !== newCurrentPlayer) {
+                log(`回合切換: ${oldCurrentPlayer} → ${newCurrentPlayer}`, 'info');
+            }
 
             gameState = state;
             document.getElementById('gamePhase').textContent = state.phase;
@@ -484,8 +495,7 @@
                 playersList.appendChild(playerCard);
             });
 
-            document.getElementById('currentPlayer').textContent =
-                state.players[state.current_player_index]?.name || '-';
+            document.getElementById('currentPlayer').textContent = newCurrentPlayer || '-';
         }
 
         function updateMyHand(hand) {
