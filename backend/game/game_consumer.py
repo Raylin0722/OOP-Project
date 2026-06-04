@@ -298,7 +298,8 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         # [女皇技能修復] 傳遞累積懲罰資訊給 can_use_skill
         skill_check_params = {
-            'has_draw_penalty': engine.draw_penalty > 0
+            'has_draw_penalty': engine.draw_penalty > 0,
+            'turn_count': current_player.turn_count
         }
 
         # 檢查是否可以使用技能
