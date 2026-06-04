@@ -13,6 +13,7 @@ from django.core.mail import send_mail
 from django.core.validators import validate_email
 from django.db import transaction
 from django.http import JsonResponse
+from django.shortcuts import render  # [測試功能] 用於渲染 game_test.html
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -846,3 +847,21 @@ def matchmaking_status(request):
         status=MatchmakingTicket.Status.WAITING,
     ).first()
     return JsonResponse({'room': None, 'ticket': _ticket_payload(ticket)})
+
+
+# ============================================================================
+# [測試功能] 遊戲測試頁面 - 僅用於開發測試
+# ============================================================================
+@require_http_methods(['GET'])
+def game_test(request):
+    """
+    [測試功能] 遊戲測試介面
+    提供簡易的 WebSocket 連接測試頁面，用於驗證遊戲引擎功能
+    僅在開發環境使用，正式部署時應該移除或禁用此端點
+    """
+    context = {
+        'is_authenticated': request.user.is_authenticated,
+        'username': request.user.username if request.user.is_authenticated else None,
+        'user_id': request.user.id if request.user.is_authenticated else None,
+    }
+    return render(request, 'game_test.html', context)
