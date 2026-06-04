@@ -4,6 +4,7 @@
 from typing import List, Optional, Tuple
 from enum import Enum
 import random
+from datetime import datetime, timedelta
 
 from .cards import (
     AbstractCard, CardColor, CardType, PlayCardCommand,
@@ -43,6 +44,10 @@ class GameEngine:
         self.turn_count = 0  # 總回合數
         self.winners: List[Tuple[Player, int]] = []  # (玩家, 排名)
 
+        # 時間限制 (15分鐘)
+        self.game_start_time: Optional[datetime] = None
+        self.game_time_limit = timedelta(minutes=15)
+
 
     def start_game(self) -> dict:
         if self.phase != GamePhase.WAITING:
@@ -76,6 +81,9 @@ class GameEngine:
         self.phase = GamePhase.PLAYING
         self.turn_count = 0
 
+        # 記錄遊戲開始時間
+        self.game_start_time = datetime.now()
+
         # 第一位玩家開始回合
         current_player = self.get_current_player()
         current_player.start_turn()
@@ -86,6 +94,8 @@ class GameEngine:
             'current_player': current_player.player_id,
             'first_card': str(first_card) if first_card else None,
             'deck_size': len(self.draw_deck),
+            'game_start_time': self.game_start_time.isoformat(),
+            'time_limit_seconds': int(self.game_time_limit.total_seconds()),
         }
 
     def play_turn(self, command: PlayCardCommand) -> dict:
@@ -383,20 +393,90 @@ class GameEngine:
         # 取得當前累積抽牌懲罰數
         return self.draw_penalty
 
+    def check_timeout(self) -> bool:
+        # 檢查遊戲是否超時 (15分鐘)
+        if self.game_start_time is None:
+            return False
+
+        elapsed = datetime.now() - self.game_start_time
+        return elapsed >= self.game_time_limit
+
+    def get_remaining_time(self) -> Optional[timedelta]:
+        # 取得剩餘時間
+        if self.game_start_time is None:
+            return None
+
+        elapsed = datetime.now() - self.game_start_time
+        remaining = self.game_time_limit - elapsed
+        return remaining if remaining.total_seconds() > 0 else timedelta(0)
+
+    def force_end_game(self) -> dict:
+        # 強制結束遊戲並結算積分 (15分鐘超時)
+        if self.phase != GamePhase.PLAYING:
+            return {'success': False, 'error': 'Game not in playing phase'}
+
+        # 更新遊戲階段為結束
+        self.phase = GamePhase.FINISHED
+
+        # 根據手牌數量排名 (手牌少的排名高)
+        rankings = self.get_rankings()
+
+        # 前兩名記錄為獲勝者
+        if len(rankings) >= 2:
+            # 第一名
+            if len(self.winners) == 0 or rankings[0][0] not in [w[0] for w in self.winners]:
+                self.winners.append((rankings[0][0], 1))
+
+            # 第二名
+            if len(self.winners) == 1 or rankings[1][0] not in [w[0] for w in self.winners]:
+                self.winners.append((rankings[1][0], 2))
+
+        return {
+            'success': True,
+            'game_over': True,
+            'reason': 'timeout',
+            'time_limit_reached': True,
+            'final_rankings': [
+                {
+                    'player_id': p.player_id,
+                    'player_name': p.name,
+                    'hand_size': size,
+                    'rank': idx + 1
+                }
+                for idx, (p, size) in enumerate(rankings)
+            ],
+            'phase': self.phase.value,
+        }
+
 
     def _can_play_card(self, card: AbstractCard) -> bool:
         # 判斷是否可以打出此牌
 
-        # [累積懲罰機制] 如果有累積懲罰，只能打出可以累加懲罰的牌（+2, +4）
+        # [累積懲罰機制] 如果有累積懲罰，可以選擇出牌或抽牌
+        # 若出牌，必須符合：相同功能、相同數字、或黑色累加牌
         if self.draw_penalty > 0:
-            # 只能打出 Draw2 或 WildDraw4 來累加懲罰
-            if card.card_type in [CardType.DRAW2, CardType.WILD_DRAW4]:
-                # Draw2 必須顏色相同
-                if card.card_type == CardType.DRAW2:
-                    return card.color == self.current_color
-                # WildDraw4 永遠可以打
+            # 黑色累加牌（WildDraw4）永遠可以打
+            if card.card_type == CardType.WILD_DRAW4:
                 return True
-            # 其他牌都不能打
+
+            # Draw2 可以打（不需要顏色相同，只要是 Draw2 就可以累加）
+            if card.card_type == CardType.DRAW2:
+                return True
+
+            # 檢查是否與最後一張牌有相同功能或數字
+            if len(self.discard_pile) > 0:
+                last_card = self.discard_pile[-1]
+
+                # 相同功能類型（如：skip 對 skip, reverse 對 reverse）
+                if card.card_type == last_card.card_type:
+                    return True
+
+                # 相同數字（僅數字牌）
+                if isinstance(card, NumberCard) and isinstance(last_card, NumberCard):
+                    if card.number == last_card.number:
+                        return True
+
+            # 不符合以上條件，無法出牌
             return False
 
         # [正常出牌邏輯] 沒有累積懲罰時的規則
@@ -411,6 +491,15 @@ class GameEngine:
         # 數字相同（僅對數字牌檢查）
         if isinstance(card, NumberCard) and self.current_number is not None:
             if card.number == self.current_number:
+                return True
+
+        # 檢查功能牌是否相同（即使顏色不同）
+        if len(self.discard_pile) > 0:
+            last_card = self.discard_pile[-1]
+            # 功能牌匹配：skip, reverse, draw2, steal_card 等
+            if (card.card_type == last_card.card_type and
+                card.card_type in [CardType.SKIP, CardType.REVERSE, CardType.DRAW2,
+                                   CardType.STEAL_CARD]):
                 return True
 
         return False
