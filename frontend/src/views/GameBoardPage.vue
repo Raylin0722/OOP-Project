@@ -9,8 +9,8 @@ import roleScoutUrl from '../assets/pictures/c3_scout.png';
 import roleQueenUrl from '../assets/pictures/c4_queen.png';
 
 const TURN_SECONDS = 30;
-const API_BASE = `http://${window.location.hostname}:8000/api`;
-const WS_BASE = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:8000/ws`;
+const API_BASE = '/api';
+const WS_BASE = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
 const cardImages = import.meta.glob('../assets/pictures/[rbgyf]*.png', { eager: true, import: 'default' });
 const gameRoomBackground = `url("${gameRoomUrl}")`;
 

@@ -24,7 +24,7 @@ from .engine import (
     CardColor, CardType, PlayCardCommand,
     DeckFactory,
 )
-from .ai_player import get_default_ai_player
+from .ai_client import get_ai_decision
 from .models import Room, RoomMember, MatchRecord, MatchParticipant, PlayerProfile
 
 
@@ -638,7 +638,7 @@ class GameConsumer(AsyncWebsocketConsumer):
     def _play_model_ai_turn(self, engine, current_player):
         current_index = engine.current_player_index
         try:
-            decision = get_default_ai_player().decide(engine, current_index)
+            decision = get_ai_decision(engine, current_index)
         except Exception as exc:
             print(f'[test-ai] model decision failed; fallback to first_playable: {exc}', flush=True)
             return None

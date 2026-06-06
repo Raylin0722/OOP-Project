@@ -1,67 +1,92 @@
 services:
-  # 1. Redis：遊戲即時通訊的中繼核心
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: oop_backend
+    command: daphne -b 0.0.0.0 -p 8000 core.asgi:application
+    env_file:
+      - .env
+    environment:
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DJANGO_CORS_ALLOWED_ORIGINS: ${DJANGO_CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      DJANGO_SESSION_COOKIE_SECURE: ${DJANGO_SESSION_COOKIE_SECURE:-False}
+      DJANGO_CSRF_COOKIE_SECURE: ${DJANGO_CSRF_COOKIE_SECURE:-False}
+      DJANGO_SECURE_SSL_REDIRECT: ${DJANGO_SECURE_SSL_REDIRECT:-False}
+      DJANGO_SECURE_PROXY_SSL_HEADER: ${DJANGO_SECURE_PROXY_SSL_HEADER:-False}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CHANNEL_LAYER_BACKEND: ${CHANNEL_LAYER_BACKEND:-redis}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-noreply@example.com}
+      EMAIL_BACKEND: ${EMAIL_BACKEND:-django.core.mail.backends.console.EmailBackend}
+      AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai_service:9000}
+      AI_SERVICE_TIMEOUT: ${AI_SERVICE_TIMEOUT:-5}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - redis
+      - ai_service
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: oop_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+  matchmaking_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: oop_matchmaking_worker
+    command: python manage.py matchmaking_worker
+    restart: always
+    env_file:
+      - .env
+    environment:
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DJANGO_CORS_ALLOWED_ORIGINS: ${DJANGO_CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CHANNEL_LAYER_BACKEND: ${CHANNEL_LAYER_BACKEND:-redis}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-noreply@example.com}
+      EMAIL_BACKEND: ${EMAIL_BACKEND:-django.core.mail.backends.console.EmailBackend}
+      AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai_service:9000}
+      AI_SERVICE_TIMEOUT: ${AI_SERVICE_TIMEOUT:-5}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - backend
+      - redis
+
+  ai_service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.ai
+    container_name: oop_ai_service
+    restart: always
+    environment:
+      AI_PROJECT_ROOT: ${AI_PROJECT_ROOT:-/oop-ai}
+      AI_CHECKPOINT_PATH: ${AI_CHECKPOINT_PATH:-/oop-ai/experiments/200k-rand-v1/checkpoint_dqn.pt}
+      AI_DEVICE: ${AI_DEVICE:-cpu}
+      PYTHONPATH: ${PYTHONPATH:-/oop-ai/vendor/rlcard}
+      AI_SERVICE_HOST: 0.0.0.0
+      AI_SERVICE_PORT: 9000
+    volumes:
+      - ${AI_PROJECT_HOST_PATH:-../OOP-AI}:/oop-ai
+
   redis:
     image: redis:7-alpine
     container_name: oop_redis
-    ports:
-      - "6379:6379"
     restart: always
-
-  # 2. Frontend：Vue 3 + Vite 開發環境 (Node 20)
-  frontend:
-    image: node:20-slim
-    container_name: oop_frontend
-    working_dir: /app
-    volumes:
-      - ./frontend:/app
-      # 防止本地 node_modules 覆蓋容器內的環境，確保版本統一
-      - /app/node_modules
-    ports:
-      - "5173:5173"
-    # 啟動時自動安裝套件並啟動 Vite 伺服器
-    command: sh -c "npm install && npm run dev -- --host"
-    depends_on:
-      - backend
-
-  # 3. Backend：Django + Channels (Python 3.12)
-  backend:
-    build: ./backend
-    container_name: oop_backend
-    env_file:
-      - .env
-    volumes:
-      - ./backend:/app
-      - ../OOP-AI:/oop-ai
-    ports:
-      - "8000:8000"
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - CHANNEL_LAYER_BACKEND=inmemory
-      - AI_PROJECT_ROOT=/oop-ai
-      - AI_CHECKPOINT_PATH=/oop-ai/experiments/200k-rand-v1/checkpoint_dqn.pt
-      - AI_DEVICE=cpu
-      - PYTHONPATH=/oop-ai/vendor/rlcard
-    depends_on:
-      - redis
-    # 這裡先預留啟動指令，等你的 manage.py 準備好後取消註解即可
-    command: python manage.py runserver 0.0.0.0:8000
-
-  matchmaking_worker:
-    build: ./backend
-    container_name: oop_matchmaking_worker
-    env_file:
-      - .env
-    volumes:
-      - ./backend:/app
-      - ../OOP-AI:/oop-ai
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - AI_PROJECT_ROOT=/oop-ai
-      - AI_CHECKPOINT_PATH=/oop-ai/experiments/200k-rand-v1/checkpoint_dqn.pt
-      - AI_DEVICE=cpu
-      - PYTHONPATH=/oop-ai/vendor/rlcard
-    depends_on:
-      - redis
-      - backend
-    restart: always
-    command: python manage.py matchmaking_worker

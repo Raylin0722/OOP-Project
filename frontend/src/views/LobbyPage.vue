@@ -6,9 +6,9 @@ import PlayerStatsPanel from '../components/PlayerStatsPanel.vue';
 import LobbyActionButtons from '../components/LobbyActionButtons.vue';
 import hallImage from '../assets/pictures/hall.png';
 
-const API_BASE = `http://${window.location.hostname}:8000/api`;
+const API_BASE = '/api';
 const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss' : 'ws';
-const WS_BASE = `${WS_PROTOCOL}://${window.location.hostname}:8000/ws`;
+const WS_BASE = `${WS_PROTOCOL}://${window.location.host}/ws`;
 const router = useRouter();
 const route = useRoute();
 

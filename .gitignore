@@ -30,3 +30,8 @@ Thumbs.db
 accout.md
 frontend.zip
 *.zip
+*.zip
+.env
+backend/db.sqlite3
+backend/staticfiles/
+frontend/dist/

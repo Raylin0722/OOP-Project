@@ -1,0 +1,4 @@
+-r requirements.txt
+numpy>=1.26.0
+torch>=2.3.0
+termcolor>=2.0.0

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -39,9 +40,14 @@ class DQNCheckpointPlayer:
         self._agent = None
 
     def decide(self, engine: Any, player_index: Optional[int] = None) -> AIDecision:
-        agent = self._load_agent()
         state = build_model_state(engine, player_index)
+        return self.decide_from_state(state)
+
+    def decide_from_state(self, state: dict[str, Any]) -> AIDecision:
+        agent = self._load_agent()
+        state = self._normalize_state(state)
         action_id, info = agent.eval_step(state)
+        action_id = int(action_id)
         rlcard_action = ACTION_LIST[action_id]
         return AIDecision(
             action_id=action_id,
@@ -76,6 +82,16 @@ class DQNCheckpointPlayer:
         vendor_path = os.path.join(self.ai_project_root, "vendor", "rlcard")
         if vendor_path not in sys.path:
             sys.path.insert(0, vendor_path)
+
+    def _normalize_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        legal_actions = state.get("legal_actions")
+        if isinstance(legal_actions, dict):
+            state = dict(state)
+            state["legal_actions"] = OrderedDict(
+                (int(action_id), value)
+                for action_id, value in legal_actions.items()
+            )
+        return state
 
 
 _default_player: Optional[DQNCheckpointPlayer] = None
