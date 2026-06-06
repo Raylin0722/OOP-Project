@@ -1067,6 +1067,11 @@ async function leaveRoom() {
 }
 
 async function handleExitRoom() {
+  if (showGameOverModal.value) {
+    returnToLobbyAfterGame();
+    return;
+  }
+
   const confirmed = window.confirm('確定要離開本局遊戲嗎？離開後本局會由 AI 代打，你將無法重新加入，結算時會標記離線處罰。');
   if (!confirmed) {
     return;
@@ -1075,6 +1080,11 @@ async function handleExitRoom() {
   await leaveCurrentGame();
   closeGameSocket();
   window.location.assign('/lobby?left=1');
+}
+
+function returnToLobbyAfterGame() {
+  closeGameSocket();
+  window.location.assign('/lobby');
 }
 
 function leaveCurrentGame() {
@@ -1732,7 +1742,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <button class="action-btn game-over-exit" type="button" @click="handleExitRoom">回到大廳</button>
+        <button class="action-btn game-over-exit" type="button" @click="returnToLobbyAfterGame">回到大廳</button>
       </section>
     </div>
   </main>
