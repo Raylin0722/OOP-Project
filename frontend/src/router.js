@@ -4,7 +4,7 @@ import LobbyPage from './views/LobbyPage.vue';
 import GameBoardPage from './views/GameBoardPage.vue';
 import GameDebugPage from './views/GameDebugPage.vue';
 
-const API_BASE = `http://${window.location.hostname}:8000/api`;
+const API_BASE = '/api';
 
 const routes = [
   {
