@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     container_name: oop_backend
     command: daphne -b 0.0.0.0 -p 8000 core.asgi:application
+    ports:
+      - "127.0.0.1:8000:8000" # 讓主機實體 Nginx 能夠連接後端
     env_file:
       - .env
     environment:
@@ -37,7 +39,7 @@ services:
       dockerfile: Dockerfile
     container_name: oop_frontend
     ports:
-      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8080:80" # 改為 8080 埠，避開主機的 80 埠衝突
     depends_on:
       - backend
 
