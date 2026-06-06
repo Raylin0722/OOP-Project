@@ -28,7 +28,7 @@ from .ai_client import get_ai_decision
 from .models import Room, RoomMember, MatchRecord, MatchParticipant, PlayerProfile
 
 
-AI_TURN_ACTION_REMAINING_SECONDS = 22
+AI_TURN_ACTION_REMAINING_SECONDS = 28
 
 
 class GameConsumer(AsyncWebsocketConsumer):
@@ -1151,6 +1151,14 @@ class GameConsumer(AsyncWebsocketConsumer):
             hand_dict = hand_state.to_dict()
             current_player = engine.get_current_player()
             hand_dict.update(self._build_player_action_availability(engine, player, current_player))
+            if hand_dict.get('is_my_turn'):
+                hand_dict['playable_cards'] = [
+                    index
+                    for index, card in enumerate(player.get_hand().get_cards())
+                    if engine._can_play_card(card)
+                ]
+            else:
+                hand_dict['playable_cards'] = []
         else:
             hand_dict = None
 

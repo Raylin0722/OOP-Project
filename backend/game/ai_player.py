@@ -43,6 +43,9 @@ class DQNCheckpointPlayer:
         state = build_model_state(engine, player_index)
         return self.decide_from_state(state)
 
+    def load(self) -> None:
+        self._load_agent()
+
     def decide_from_state(self, state: dict[str, Any]) -> AIDecision:
         agent = self._load_agent()
         state = self._normalize_state(state)

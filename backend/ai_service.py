@@ -61,6 +61,7 @@ class AIRequestHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    get_default_ai_player().load()
     server = ThreadingHTTPServer((HOST, PORT), AIRequestHandler)
     print(f"[ai-service] listening on {HOST}:{PORT}", flush=True)
     server.serve_forever()

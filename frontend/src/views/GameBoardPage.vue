@@ -1210,9 +1210,15 @@ function handleReturnCardChoice(returnCardIndex) {
     return;
   }
 
+  const adjustedReturnCardIndex =
+    returnCardIndex > selectedCard.value.index
+      ? returnCardIndex - 1
+      : returnCardIndex;
+
+
   submitGameAction('play_card', selectedCard.value, {
     target_player_index: pendingTargetIndex.value,
-    return_card_index: returnCardIndex,
+    return_card_index: adjustedReturnCardIndex,
   });
 }
 

@@ -443,34 +443,43 @@ class GameEngine:
         ):
             self.swap_hands(current_index, target_index)
 
-    def steal_and_return_card(self, target_index: int, return_card_index: Optional[int]) -> None:
-        # 從目標玩家偷牌並還牌
+    def steal_and_return_card(self, target_index: int, return_card_index=None) -> None:
         current_index = self.current_player_index
-        if (
+
+        if not (
             0 <= target_index < len(self.players)
             and target_index != current_index
             and not self.players[target_index].has_finished()
         ):
-            current_player = self.players[current_index]
-            target_player = self.players[target_index]
+            return
 
-            # 偷一張牌
-            target_cards = target_player.get_hand().get_cards()
-            if len(target_cards) > 0:
-                stolen_card = random.choice(target_cards)
-                target_player.get_hand().remove_card(stolen_card)
-                current_player.draw_card(stolen_card)
+        current_player = self.players[current_index]
+        target_player = self.players[target_index]
 
-            # 還一張牌
-            current_cards = current_player.get_hand().get_cards()
-            if len(current_cards) > 0:
-                if return_card_index is not None and 0 <= return_card_index < len(current_cards):
-                    return_card = current_cards[return_card_index]
-                else:
-                    return_card = random.choice(current_cards)
-                current_player.get_hand().remove_card(return_card)
-                target_player.draw_card(return_card)
+        current_hand = current_player.get_hand()
+        target_hand = target_player.get_hand()
 
+        current_cards = current_hand.get_cards()
+        target_cards = target_hand.get_cards()
+
+        if not current_cards or not target_cards:
+            return
+
+        if return_card_index is None or not (0 <= return_card_index < len(current_cards)):
+            return
+
+        # 1. 先取出自己要還的牌
+        return_card = current_cards[return_card_index]
+        current_hand.remove_card(return_card)
+
+        # 2. 再從目標玩家手牌隨機偷一張
+        stolen_card = random.choice(target_cards)
+        target_hand.remove_card(stolen_card)
+
+        # 3. 最後交換
+        current_player.draw_card(stolen_card)
+        target_player.draw_card(return_card)
+    
     def target_draw_cards(self, target_index: int, count: int) -> None:
         # 指定玩家抽牌
         self.target_draw_penalty(target_index, count)
