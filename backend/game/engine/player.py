@@ -179,6 +179,7 @@ class Player:
         # 技能使用統計
         self.skill_used_count = 0
         self.skill_used_this_turn = False
+        self.last_skill_turn_count = -3
         self.finished_rank: Optional[int] = None
 
     def play_card(self, card: 'AbstractCard') -> Optional['AbstractCard']:
@@ -245,7 +246,11 @@ class Player:
         if self.skill_used_this_turn:
             return False
 
-        return self.skill.can_use(self.turn_count, **kwargs)
+        return self.skill.can_use(
+            self.turn_count,
+            last_skill_turn_count=self.last_skill_turn_count,
+            **kwargs
+        )
 
     def use_skill(self, engine, **kwargs) -> dict:
         # 使用技能
@@ -267,6 +272,7 @@ class Player:
         if result.get('success'):
             self.skill_used_count += 1
             self.skill_used_this_turn = True
+            self.last_skill_turn_count = self.turn_count
 
         return result
 
@@ -282,11 +288,13 @@ class Player:
     def reset_turn_count(self) -> None:
         # 重置回合計數(新遊戲開始時)
         self.turn_count = 0
+        self.last_skill_turn_count = -3
 
     def reset_skill(self) -> None:
         # 重置技能狀態(新遊戲開始時)
         self.skill_used_count = 0
         self.skill_used_this_turn = False
+        self.last_skill_turn_count = -3
         if self.skill and hasattr(self.skill, 'reset'):
             self.skill.reset()
 
@@ -310,6 +318,7 @@ class Player:
             'turn_count': self.turn_count,
             'skill_used_count': self.skill_used_count,
             'skill_used_this_turn': self.skill_used_this_turn,
+            'last_skill_turn_count': self.last_skill_turn_count,
             'finished_rank': self.finished_rank,
             'has_finished': self.has_finished(),
         }

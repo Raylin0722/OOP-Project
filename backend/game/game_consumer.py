@@ -9,7 +9,7 @@
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -28,8 +28,7 @@ from .ai_client import get_ai_decision
 from .models import Room, RoomMember, MatchRecord, MatchParticipant, PlayerProfile
 
 
-TEST_AI_TURN_DELAY_SECONDS = 1.1
-DISCONNECTED_AI_REPLACE_SECONDS = 180
+AI_TURN_ACTION_REMAINING_SECONDS = 22
 
 
 class GameConsumer(AsyncWebsocketConsumer):
@@ -66,20 +65,19 @@ class GameConsumer(AsyncWebsocketConsumer):
             return
 
         # 加入房間群組
-        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        if not await self._safe_group_add(self.group_name, self.channel_name):
+            await self.close(code=4500)
+            return
         await self.accept()
         if not self.is_debug_connection:
-            await self._handle_player_reconnected()
             await self._ensure_started_for_playing_room()
 
         # 發送當前遊戲狀態
         await self._send_game_state()
     async def disconnect(self, close_code):
         # 斷開 WebSocket 連接
-        if not getattr(self, 'is_debug_connection', False):
-            await self._handle_player_disconnected()
         if hasattr(self, 'group_name'):
-            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+            await self._safe_group_discard(self.group_name, self.channel_name)
 
     async def receive(self, text_data):
         # 接收客戶端訊息
@@ -97,6 +95,8 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self.handle_use_skill(data)
             elif action == 'force_settlement':
                 await self.handle_force_settlement()
+            elif action == 'leave_game':
+                await self.handle_leave_game()
             elif action == 'get_state':
                 await self._send_game_state()
             elif action == 'debug_state':
@@ -174,7 +174,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         await self._mark_room_playing(test_mode)
 
         # 廣播遊戲開始
-        await self.channel_layer.group_send(
+        await self._safe_group_send(
             self.group_name,
             {
                 'type': 'game_started',
@@ -220,6 +220,68 @@ class GameConsumer(AsyncWebsocketConsumer):
         self._record_game_event('forced_settlement', result)
         await self._finish_game(engine, result)
 
+    async def handle_leave_game(self):
+        engine = GameConsumer.game_engines.get(self.room_code)
+        if not engine or engine.phase != GamePhase.PLAYING:
+            await self._remove_room_member_for_left_game()
+            await self.send(text_data=json.dumps({
+                'type': 'game_left',
+                'settlement_penalty': False,
+            }))
+            return
+
+        player_id = str(self.user.id)
+        player = self._find_player_by_original_id(engine, player_id)
+        if player and not self._is_test_ai_player(player):
+            info = {
+                'name': player.name,
+                'replaced': bool(getattr(player, 'is_ai_replacement', False)),
+            }
+            self._replace_disconnected_player_with_ai(engine, player_id, info)
+            GameConsumer.disconnected_players.setdefault(self.room_code, {})[player_id] = {
+                **info,
+                'replaced': True,
+            }
+
+        room_result = await self._remove_room_member_for_left_game()
+        await self.send(text_data=json.dumps({
+            'type': 'game_left',
+            'settlement_penalty': bool(player),
+            **room_result,
+        }))
+
+        if room_result.get('room_deleted'):
+            await self._safe_group_send(
+                f'room_{self.room_code}',
+                {'type': 'room.deleted'},
+            )
+            if engine.phase == GamePhase.PLAYING:
+                result = engine.force_end_game(
+                    end_reason='no_human_players',
+                    end_reason_text='no_human_players',
+                )
+                result['left_user_id'] = self.user.id
+                self._record_game_event('no_human_players_settlement', result)
+                await self._finish_game(engine, result)
+            return
+        else:
+            await self._safe_group_send(
+                f'room_{self.room_code}',
+                {
+                    'type': 'room.updated',
+                    'payload': {
+                        'game_left': True,
+                        'left_user_id': self.user.id,
+                    },
+                },
+            )
+
+        await self._broadcast_game_state()
+        self._ensure_room_monitor()
+        current_player = engine.get_current_player()
+        if self._is_test_ai_player(current_player):
+            asyncio.create_task(self._run_test_ai_turns(engine))
+
     async def _finish_game(self, engine, result):
         if not result or not result.get('success') or not result.get('game_over'):
             return
@@ -236,30 +298,32 @@ class GameConsumer(AsyncWebsocketConsumer):
                 end_reason=result.get('end_reason'),
             )
             result['match_results'] = results
-            await self.channel_layer.group_send(
-                self.group_name,
-                {
-                    'type': 'match_results',
-                    'payload': {'results': results},
-                }
-            )
         except Exception as exc:
             error_message = str(exc)
             result['match_results'] = []
             result['persistence_error'] = error_message
             print(f'[persist-match] failed to persist results for room {self.room_code}: {error_message}', flush=True)
 
+        if result.get('match_results'):
+            await self._safe_group_send(
+                self.group_name,
+                {
+                    'type': 'match_results',
+                    'payload': {'results': result['match_results']},
+                },
+            )
+
         reset_result = await self._reset_room_after_game()
 
         if reset_result.get('room_deleted'):
-            await self.channel_layer.group_send(
+            await self._safe_group_send(
                 f'room_{self.room_code}',
                 {
                     'type': 'room.deleted',
                 }
             )
         else:
-            await self.channel_layer.group_send(
+            await self._safe_group_send(
                 f'room_{self.room_code}',
                 {
                     'type': 'room.updated',
@@ -273,7 +337,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 }
             )
 
-        await self.channel_layer.group_send(
+        await self._safe_group_send(
             self.group_name,
             {
                 'type': 'game_ended',
@@ -288,6 +352,30 @@ class GameConsumer(AsyncWebsocketConsumer):
             monitor_task.cancel()
 
         asyncio.create_task(self._cleanup_finished_room_after_delay())
+
+    async def _safe_group_send(self, group_name, message):
+        try:
+            await self.channel_layer.group_send(group_name, message)
+            return True
+        except Exception as exc:
+            print(f'[channel-send] failed group={group_name} type={message.get("type")}: {exc}', flush=True)
+            return False
+
+    async def _safe_group_add(self, group_name, channel_name):
+        try:
+            await self.channel_layer.group_add(group_name, channel_name)
+            return True
+        except Exception as exc:
+            print(f'[channel-add] failed group={group_name}: {exc}', flush=True)
+            return False
+
+    async def _safe_group_discard(self, group_name, channel_name):
+        try:
+            await self.channel_layer.group_discard(group_name, channel_name)
+            return True
+        except Exception as exc:
+            print(f'[channel-discard] failed group={group_name}: {exc}', flush=True)
+            return False
 
     async def _cleanup_finished_room_after_delay(self):
         await asyncio.sleep(1)
@@ -392,7 +480,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         # 廣播打牌結果
         self._record_game_event('card_played', result)
-        await self.channel_layer.group_send(
+        await self._safe_group_send(
             self.group_name,
             {
                 'type': 'card_played',
@@ -463,7 +551,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             'count': len(drawn),
             'next_player': engine.get_current_player().player_id,
         })
-        await self.channel_layer.group_send(
+        await self._safe_group_send(
             self.group_name,
             {
                 'type': 'card_drawn',
@@ -530,7 +618,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         # 廣播技能使用結果
 
-        await self.channel_layer.group_send(
+        await self._safe_group_send(
             self.group_name,
             {
                 'type': 'skill_used',
@@ -608,14 +696,22 @@ class GameConsumer(AsyncWebsocketConsumer):
                 print(f'[test-ai] current player is human {current_player.player_id}; waiting', flush=True)
                 return
 
+            turn_started_at = engine.current_turn_started_at
             await self._broadcast_game_state()
-            await asyncio.sleep(TEST_AI_TURN_DELAY_SECONDS)
+            await self._wait_for_ai_turn_window(engine, current_player, turn_started_at)
+            if engine.phase != GamePhase.PLAYING:
+                return
+            if str(engine.get_current_player().player_id) != str(current_player.player_id):
+                return
+            if engine.current_turn_started_at != turn_started_at:
+                return
+
             result = self._play_test_ai_turn(engine, current_player)
             print(f'[test-ai] room={self.room_code} player={current_player.player_id} result={result}', flush=True)
             event_type = 'card_played' if result.get('action') == 'play_card' else 'card_drawn'
             self._record_game_event(event_type, result)
 
-            await self.channel_layer.group_send(
+            await self._safe_group_send(
                 self.group_name,
                 {
                     'type': event_type,
@@ -627,6 +723,23 @@ class GameConsumer(AsyncWebsocketConsumer):
             if result.get('game_over'):
                 await self._finish_game(engine, result)
                 return
+
+    async def _wait_for_ai_turn_window(self, engine, current_player, turn_started_at):
+        if turn_started_at is None:
+            return
+
+        turn_deadline = turn_started_at + engine.turn_time_limit
+        wait_until = turn_deadline - timedelta(seconds=AI_TURN_ACTION_REMAINING_SECONDS)
+        wait_seconds = (wait_until - datetime.now()).total_seconds()
+        if wait_seconds <= 0:
+            return
+
+        print(
+            f'[test-ai] room={self.room_code} player={current_player.player_id} '
+            f'waiting {wait_seconds:.1f}s before action',
+            flush=True,
+        )
+        await asyncio.sleep(wait_seconds)
 
     def _play_test_ai_turn(self, engine, current_player):
         model_result = self._play_model_ai_turn(engine, current_player)
@@ -798,47 +911,6 @@ class GameConsumer(AsyncWebsocketConsumer):
     def _is_test_ai_player(player):
         return str(player.player_id).startswith('ai_')
 
-    async def _handle_player_disconnected(self):
-        engine = GameConsumer.game_engines.get(getattr(self, 'room_code', None))
-        if not engine or engine.phase != GamePhase.PLAYING:
-            return
-
-        player = self._find_player_by_original_id(engine, str(self.user.id))
-        if not player or self._is_test_ai_player(player):
-            return
-
-        player.is_disconnected = True
-        disconnected = GameConsumer.disconnected_players.setdefault(self.room_code, {})
-        disconnected[str(self.user.id)] = {
-            'disconnected_at': datetime.now(),
-            'name': player.name,
-            'replaced': bool(getattr(player, 'is_ai_replacement', False)),
-        }
-        await self._broadcast_game_state()
-        self._ensure_room_monitor()
-
-    async def _handle_player_reconnected(self):
-        engine = GameConsumer.game_engines.get(getattr(self, 'room_code', None))
-        if not engine:
-            return
-
-        player_id = str(self.user.id)
-        disconnected = GameConsumer.disconnected_players.get(self.room_code, {})
-        info = disconnected.pop(player_id, None)
-        player = self._find_player_by_original_id(engine, player_id)
-
-        if not player:
-            return
-
-        if info and getattr(player, 'is_ai_replacement', False):
-            player.player_id = player_id
-            player.name = getattr(player, 'original_name', info.get('name', player.name))
-            player.is_ai = False
-            player.is_ai_replacement = False
-
-        player.is_disconnected = False
-        await self._broadcast_game_state()
-
     def _ensure_room_monitor(self):
         task = GameConsumer.room_monitor_tasks.get(self.room_code)
         if task and not task.done():
@@ -858,18 +930,6 @@ class GameConsumer(AsyncWebsocketConsumer):
                 if not engine or engine.phase != GamePhase.PLAYING:
                     break
 
-                await self.channel_layer.group_send(group_name, {'type': 'game_state_updated'})
-
-                now = datetime.now()
-                replaced_any = False
-                for player_id, info in list(disconnected.items()):
-                    elapsed = (now - info['disconnected_at']).total_seconds()
-                    if not info.get('replaced') and elapsed >= DISCONNECTED_AI_REPLACE_SECONDS:
-                        replaced_any = self._replace_disconnected_player_with_ai(engine, player_id, info) or replaced_any
-
-                if replaced_any:
-                    await self.channel_layer.group_send(group_name, {'type': 'game_state_updated'})
-
                 current_player = engine.get_current_player()
                 if self._is_test_ai_player(current_player):
                     await self._run_test_ai_turns(engine)
@@ -883,7 +943,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                 reason = 'disconnect_turn_timeout' if original_id in disconnected else 'turn_timeout'
                 result = self._draw_for_player(engine, current_player, reason)
                 self._record_game_event('card_drawn', result)
-                await self.channel_layer.group_send(
+                await self._safe_group_send(
                     group_name,
                     {
                         'type': 'card_drawn',
@@ -948,7 +1008,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         }
 
     async def _broadcast_game_state(self):
-        await self.channel_layer.group_send(
+        await self._safe_group_send(
             self.group_name,
             {'type': 'game_state_updated'}
         )
@@ -1045,10 +1105,9 @@ class GameConsumer(AsyncWebsocketConsumer):
                 engine.current_number,
                 engine.draw_penalty,
             )
-            # 添加 is_my_turn 屬性
             hand_dict = hand_state.to_dict()
             current_player = engine.get_current_player()
-            hand_dict['is_my_turn'] = (str(player.player_id) == str(current_player.player_id))
+            hand_dict.update(self._build_player_action_availability(engine, player, current_player))
         else:
             hand_dict = None
 
@@ -1057,6 +1116,48 @@ class GameConsumer(AsyncWebsocketConsumer):
             'state': game_state.to_dict(),
             'hand': hand_dict
         }))
+
+    def _build_player_action_availability(self, engine, player, current_player):
+        is_finished = bool(getattr(player, 'has_finished', lambda: False)())
+        is_my_turn = (
+            current_player is not None
+            and str(player.player_id) == str(current_player.player_id)
+            and not is_finished
+        )
+
+        can_draw = is_my_turn
+        can_use_skill, skill_disabled_reason = self._get_skill_availability(engine, player, is_my_turn)
+
+        availability = {
+            'is_my_turn': is_my_turn,
+            'can_draw': can_draw,
+            'can_use_skill': can_use_skill,
+            'skill_disabled_reason': skill_disabled_reason,
+        }
+
+        if not is_my_turn:
+            availability['playable_cards'] = []
+
+        return availability
+
+    def _get_skill_availability(self, engine, player, is_my_turn):
+        if not is_my_turn:
+            return False, '尚未輪到你'
+
+        if not player.skill:
+            return False, '目前角色沒有技能'
+
+        skill_check_params = {
+            'has_draw_penalty': engine.draw_penalty > 0,
+        }
+
+        if getattr(player, 'skill_used_this_turn', False):
+            return False, '本回合已使用技能'
+
+        if not player.can_use_skill(**skill_check_params):
+            return False, '技能尚未冷卻或已無使用次數'
+
+        return True, ''
 
     async def _send_debug_state(self):
         engine = GameConsumer.game_engines.get(self.room_code)
@@ -1183,6 +1284,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         Reset room after a game finishes.
 
         - Remove temporary AI RoomMember rows.
+        - Remove disconnected humans that were replaced by AI.
         - Never leave room.host pointing to an AI member.
         - Delete the room if no human members remain.
         """
@@ -1194,11 +1296,21 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'ai_cleared': 0,
             }
 
+        penalty_user_ids = self._get_settlement_penalty_user_ids()
+
         ai_cleared, _ = RoomMember.objects.filter(
             room=room,
             user__isnull=True,
             is_ai=True,
         ).delete()
+
+        penalty_removed = 0
+        if penalty_user_ids:
+            penalty_removed, _ = RoomMember.objects.filter(
+                room=room,
+                user_id__in=penalty_user_ids,
+                is_ai=False,
+            ).delete()
 
         human_members = list(
             RoomMember.objects
@@ -1217,6 +1329,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             return {
                 'room_deleted': True,
                 'ai_cleared': ai_cleared,
+                'penalty_removed': penalty_removed,
             }
 
         if room.host_id not in {member.user_id for member in human_members}:
@@ -1234,14 +1347,65 @@ class GameConsumer(AsyncWebsocketConsumer):
         return {
             'room_deleted': False,
             'ai_cleared': ai_cleared,
+            'penalty_removed': penalty_removed,
             'human_count': len(human_members),
             'host_id': room.host_id,
             'status': room.status,
         }
 
+    def _get_settlement_penalty_user_ids(self):
+        engine = GameConsumer.game_engines.get(self.room_code)
+        if not engine:
+            return []
+
+        penalty_user_ids = []
+        for player in engine.players:
+            if not (getattr(player, 'is_ai_replacement', False) or getattr(player, 'settlement_penalty', False)):
+                continue
+
+            original_id = str(getattr(player, 'original_player_id', player.player_id))
+            if original_id.isdigit():
+                penalty_user_ids.append(int(original_id))
+
+        return penalty_user_ids
+
+    @database_sync_to_async
+    def _remove_room_member_for_left_game(self):
+        with transaction.atomic():
+            try:
+                room = Room.objects.select_for_update().get(code=self.room_code)
+            except Room.DoesNotExist:
+                return {'room_deleted': True, 'member_removed': False}
+
+            membership = room.members.filter(user=self.user).first()
+            if membership is None:
+                return {'room_deleted': False, 'member_removed': False}
+
+            membership.delete()
+            human_members = list(
+                RoomMember.objects
+                .filter(room=room, user__isnull=False, is_ai=False)
+                .select_related('user')
+                .order_by('joined_at', 'id')
+            )
+
+            if not human_members:
+                room.delete()
+                return {'room_deleted': True, 'member_removed': True}
+
+            if room.host_id == self.user.id:
+                room.host = human_members[0].user
+                room.save(update_fields=['host'])
+
+        return {
+            'room_deleted': False,
+            'member_removed': True,
+            'remaining_humans': len(human_members),
+        }
+
     async def _mark_room_playing(self, test_mode=False):
         await self._set_room_playing()
-        await self.channel_layer.group_send(
+        await self._safe_group_send(
             f'room_{self.room_code}',
             {
                 'type': 'room.updated',
@@ -1268,7 +1432,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             rankings = final_rankings or engine.get_competition_rankings()
             print(
-                f'[persist-match] create match={match.id} room={self.room_code} '
+                f'[persist-match] create match={match.match_id} room={self.room_code} '
                 f'end_reason={end_reason} rankings={rankings}',
                 flush=True,
             )
@@ -1297,7 +1461,10 @@ class GameConsumer(AsyncWebsocketConsumer):
 
                 base_change = award_for_rank.get(rank, 0)
                 extra_penalty = -5 if is_replaced else 0
-                score_change = base_change + extra_penalty
+                if is_replaced and end_reason == 'no_human_players':
+                    score_change = extra_penalty
+                else:
+                    score_change = base_change + extra_penalty
 
                 # Ensure trophies never drop below zero when applied.
                 profile, _ = PlayerProfile.objects.get_or_create(

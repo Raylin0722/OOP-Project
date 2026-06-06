@@ -121,8 +121,9 @@ class SeerSkill(SkillBehavior):
 
     def can_use(self, turn_count: int, **kwargs) -> bool:
         # 檢查是否可以使用技能
-        # Returns: 是否可以使用（每2回合可用一次）
-        return turn_count >= 2 and turn_count % self.use_interval == 0
+        # Returns: 是否可以使用（使用後需再經過自己2次回合）
+        last_skill_turn_count = kwargs.get('last_skill_turn_count', -3)
+        return last_skill_turn_count + self.use_interval < turn_count
 
     def execute_skill(self, context: SkillContext, **kwargs) -> dict:
         # 執行占卜師技能
@@ -191,8 +192,9 @@ class PainterSkill(SkillBehavior):
 
     def can_use(self, turn_count: int, **kwargs) -> bool:
         # 檢查是否可以使用技能
-        # Returns: 是否可以使用（每2回合可用一次）
-        return turn_count >= 2 and turn_count % self.use_interval == 0
+        # Returns: 是否可以使用（使用後需再經過自己2次回合）
+        last_skill_turn_count = kwargs.get('last_skill_turn_count', -3)
+        return last_skill_turn_count + self.use_interval < turn_count
 
     def execute_skill(self, context: SkillContext, **kwargs) -> dict:
         # 執行巫師技能

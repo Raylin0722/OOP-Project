@@ -4,7 +4,25 @@ from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 from .models import MatchmakingTicket, Room
-from .views import _room_payload, _ticket_payload, _try_complete_matchmaking
+from .views import _room_payload, _ticket_payload
+
+
+async def _safe_group_add(channel_layer, group_name, channel_name):
+    try:
+        await channel_layer.group_add(group_name, channel_name)
+        return True
+    except Exception as exc:
+        print(f'[channel-layer] group_add failed group={group_name}: {exc}', flush=True)
+        return False
+
+
+async def _safe_group_discard(channel_layer, group_name, channel_name):
+    try:
+        await channel_layer.group_discard(group_name, channel_name)
+        return True
+    except Exception as exc:
+        print(f'[channel-layer] group_discard failed group={group_name}: {exc}', flush=True)
+        return False
 
 
 class RoomConsumer(AsyncWebsocketConsumer):
@@ -21,13 +39,15 @@ class RoomConsumer(AsyncWebsocketConsumer):
             await self.close(code=4403)
             return
 
-        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        if not await _safe_group_add(self.channel_layer, self.group_name, self.channel_name):
+            await self.close(code=4500)
+            return
         await self.accept()
         await self._send_room_update()
 
     async def disconnect(self, close_code):
         if hasattr(self, 'group_name'):
-            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+            await _safe_group_discard(self.channel_layer, self.group_name, self.channel_name)
 
     async def room_updated(self, event):
         if not await self._is_room_member():
@@ -84,13 +104,15 @@ class MatchmakingConsumer(AsyncWebsocketConsumer):
             return
 
         self.group_name = f'user_{self.user.id}'
-        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        if not await _safe_group_add(self.channel_layer, self.group_name, self.channel_name):
+            await self.close(code=4500)
+            return
         await self.accept()
         await self._send_current_status()
 
     async def disconnect(self, close_code):
         if hasattr(self, 'group_name'):
-            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+            await _safe_group_discard(self.channel_layer, self.group_name, self.channel_name)
 
     async def matchmaking_updated(self, event):
         await self.send(text_data=json.dumps(event['payload']))
@@ -101,7 +123,6 @@ class MatchmakingConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _status_payload(self):
-        _try_complete_matchmaking(self.user)
         ticket = MatchmakingTicket.objects.filter(
             user=self.user,
             status=MatchmakingTicket.Status.WAITING,

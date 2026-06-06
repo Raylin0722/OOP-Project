@@ -1,5 +1,7 @@
 <script setup>
-defineProps({
+import { computed } from 'vue';
+
+const props = defineProps({
   user: {
     type: Object,
     required: true,
@@ -7,6 +9,8 @@ defineProps({
 });
 
 defineEmits(['click']);
+
+const trophyCount = computed(() => Number(props.user.total_score ?? 0));
 </script>
 
 <template>
@@ -20,7 +24,7 @@ defineEmits(['click']);
         <div class="player-stats">
           <div class="stat-item">
             <span class="stat-label">獎盃</span>
-            <span class="stat-value">0</span>
+            <span class="stat-value">{{ trophyCount }}</span>
           </div>
         </div>
       </div>

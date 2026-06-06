@@ -1,5 +1,7 @@
 <script setup>
-defineProps({
+import { computed } from 'vue';
+
+const props = defineProps({
   user: {
     type: Object,
     required: true,
@@ -7,6 +9,15 @@ defineProps({
 });
 
 defineEmits(['close']);
+
+const trophyCount = computed(() => Number(props.user.total_score ?? 0));
+const totalGames = computed(() => Number(props.user.total_games ?? 0));
+const wins = computed(() => Number(props.user.wins ?? 0));
+const winRateText = computed(() => {
+  const rawRate = Number(props.user.win_rate ?? 0);
+  const percentage = rawRate <= 1 ? rawRate * 100 : rawRate;
+  return `${percentage.toFixed(1)}%`;
+});
 </script>
 
 <template>
@@ -31,37 +42,15 @@ defineEmits(['close']);
             </div>
             <div class="stat-card">
               <span class="stat-label">獎盃數</span>
-              <span class="stat-value">0</span>
+              <span class="stat-value">{{ trophyCount }}</span>
             </div>
             <div class="stat-card">
               <span class="stat-label">總遊戲場次</span>
-              <span class="stat-value">0</span>
+              <span class="stat-value">{{ totalGames }}</span>
             </div>
             <div class="stat-card">
-              <span class="stat-label">勝場</span>
-              <span class="stat-value">0</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="stats-section">
-          <h3>進階統計</h3>
-          <div class="stat-grid">
-            <div class="stat-card">
-              <span class="stat-label">勝率</span>
-              <span class="stat-value">-</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">平均評分</span>
-              <span class="stat-value">-</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">最高評分</span>
-              <span class="stat-value">-</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">連勝紀錄</span>
-              <span class="stat-value">-</span>
+              <span class="stat-label">勝場（勝率）</span>
+              <span class="stat-value">{{ wins }}（{{ winRateText }}）</span>
             </div>
           </div>
         </div>

@@ -321,6 +321,18 @@ function shouldStayInLobbyAfterLeavingGame() {
   return route.query.left === '1';
 }
 
+function clearLeaveGameQuery() {
+  if (route.query.left !== '1') {
+    return;
+  }
+
+  const { left, ...nextQuery } = route.query;
+  router.replace({
+    path: route.path,
+    query: nextQuery,
+  });
+}
+
 function handlePlayingRoomNavigation(room, testMode = false, options = {}) {
   if (room?.status !== 'Playing') {
     return;
@@ -328,6 +340,10 @@ function handlePlayingRoomNavigation(room, testMode = false, options = {}) {
 
   if (room.game_status?.reconnect_blocked) {
     errorMessage.value = room.game_status.reason || '此局已由 AI 代打，需等本局結束才能開始新遊戲。';
+    return;
+  }
+
+  if (shouldStayInLobbyAfterLeavingGame()) {
     return;
   }
 
@@ -374,12 +390,17 @@ async function loadCurrentRoom() {
   setRoom(data.room);
 
   handlePlayingRoomNavigation(data.room, Boolean(data.room?.test_mode));
+  clearLeaveGameQuery();
 }
 
 function startLobbyPolling() {
   stopLobbyPolling();
   lobbyPollId = window.setInterval(async () => {
     if (!currentRoom.value) {
+      return;
+    }
+
+    if (roomSocket?.readyState === WebSocket.OPEN) {
       return;
     }
 
@@ -394,7 +415,7 @@ function startLobbyPolling() {
     } catch (err) {
       console.error('Failed to poll current room:', err);
     }
-  }, 1500);
+  }, 5000);
 }
 
 function stopLobbyPolling() {

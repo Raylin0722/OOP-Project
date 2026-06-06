@@ -18,7 +18,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .models import EmailVerificationCode, MatchmakingTicket, PasswordResetCode, PlayerProfile, Room, RoomMember
+from .models import EmailVerificationCode, MatchParticipant, MatchmakingTicket, PasswordResetCode, PlayerProfile, Room, RoomMember
 
 User = get_user_model()
 MATCHMAKING_TIMEOUT_SECONDS = 30
@@ -43,6 +43,8 @@ def _error(message, status=400, code='bad_request'):
 
 def _user_payload(user):
     profile = getattr(user, 'player_profile', None)
+    total_games = MatchParticipant.objects.filter(user=user).count()
+    wins = MatchParticipant.objects.filter(user=user, player_rank=1).count()
     return {
         'id': user.id,
         'username': user.username,
@@ -51,6 +53,8 @@ def _user_payload(user):
         'nickname': profile.nickname if profile else '',
         'total_score': profile.total_score if profile else 0,
         'win_rate': profile.win_rate if profile else 0.0,
+        'total_games': total_games,
+        'wins': wins,
     }
 
 
@@ -215,36 +219,45 @@ def _broadcast_room_update(room, payload=None):
     channel_layer = get_channel_layer()
     if channel_layer is None:
         return
-    async_to_sync(channel_layer.group_send)(
-        f'room_{room.code}',
-        {
-            'type': 'room.updated',
-            'payload': payload or {},
-        },
-    )
+    try:
+        async_to_sync(channel_layer.group_send)(
+            f'room_{room.code}',
+            {
+                'type': 'room.updated',
+                'payload': payload or {},
+            },
+        )
+    except Exception as exc:
+        print(f'[channel-layer] room update broadcast failed room={room.code}: {exc}', flush=True)
 
 
 def _broadcast_room_deleted(code):
     channel_layer = get_channel_layer()
     if channel_layer is None:
         return
-    async_to_sync(channel_layer.group_send)(
-        f'room_{code}',
-        {'type': 'room.deleted'},
-    )
+    try:
+        async_to_sync(channel_layer.group_send)(
+            f'room_{code}',
+            {'type': 'room.deleted'},
+        )
+    except Exception as exc:
+        print(f'[channel-layer] room deleted broadcast failed room={code}: {exc}', flush=True)
 
 
 def _broadcast_matchmaking_update(user_id, payload):
     channel_layer = get_channel_layer()
     if channel_layer is None:
         return
-    async_to_sync(channel_layer.group_send)(
-        f'user_{user_id}',
-        {
-            'type': 'matchmaking.updated',
-            'payload': payload,
-        },
-    )
+    try:
+        async_to_sync(channel_layer.group_send)(
+            f'user_{user_id}',
+            {
+                'type': 'matchmaking.updated',
+                'payload': payload,
+            },
+        )
+    except Exception as exc:
+        print(f'[channel-layer] matchmaking broadcast failed user={user_id}: {exc}', flush=True)
 
 
 def _ticket_payload(ticket):

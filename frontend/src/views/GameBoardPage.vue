@@ -29,6 +29,7 @@ const showSkillDiscardPickerModal = ref(false);
 const showGameOverModal = ref(false);
 const boardScale = ref(1);
 let gameSocket = null;
+let leaveGameResolver = null;
 let turnTimerId = null;
 let currentTurnStartedAt = null;
 let gameStartedAt = null;
@@ -55,6 +56,9 @@ const gameEndReasonText = ref('');
 const finalRankings = ref([]);
 const playerNamesById = ref({});
 const playableCardIndexes = ref([]);
+const canDraw = computed(() => isMyTurn.value);
+const canUseSkill = ref(false);
+const skillDisabledReason = ref('');
 const latestGameEvent = ref('');
 const myPlayerId = ref(null);
 const matchResults = ref([]);
@@ -429,6 +433,14 @@ function connectGameSocket() {
       return;
     }
 
+    if (data.type === 'game_left') {
+      if (leaveGameResolver) {
+        leaveGameResolver(data);
+        leaveGameResolver = null;
+      }
+      return;
+    }
+
     if (data.type === 'game_ended') {
       console.log('Received game event:', data);
       updateLatestGameEvent(data);
@@ -475,6 +487,11 @@ function connectGameSocket() {
 }
 
 function closeGameSocket() {
+  if (leaveGameResolver) {
+    leaveGameResolver(null);
+    leaveGameResolver = null;
+  }
+
   if (gameSocket) {
     gameSocket.close();
     gameSocket = null;
@@ -525,6 +542,9 @@ function applyConsumerState(data) {
     player: {
       hand: (hand?.cards || []).map(normalizeEngineCard),
       playable_cards: hand?.playable_cards || [],
+      can_draw: Boolean(hand?.can_draw),
+      can_use_skill: Boolean(hand?.can_use_skill),
+      skill_disabled_reason: hand?.skill_disabled_reason || '',
       skill_code: selfPlayer?.skill_code || 'none',
       skill_name: selfPlayer?.skill_name || '',
       is_my_turn: Boolean(hand?.is_my_turn),
@@ -601,15 +621,20 @@ function handleGameEnded(data) {
   stopLocalTurnCountdown();
   gameEndReasonText.value = formatGameEndReason(data.end_reason_text || data.end_reason || data.reason || '');
   const winnerId = data.winner ?? data.WINNER ?? data.winner_id;
-  const rankingWinner = data.final_rankings?.[0];
-  const winnerName = data.winner_name
+  const sortedRankings = [...(data.final_rankings || [])].sort((a, b) => {
+    const rankA = Number(a.rank ?? 999);
+    const rankB = Number(b.rank ?? 999);
+    return rankA - rankB;
+  });
+  const rankingWinner = sortedRankings.find((ranking) => Number(ranking.rank) === 1) || sortedRankings[0];
+  const winnerName = rankingWinner?.player_name
+    || data.winner_name
     || data.player_name
-    || rankingWinner?.player_name
     || playerNamesById.value[String(winnerId)]
     || (winnerId ? `玩家 ${winnerId}` : '未知玩家');
 
   winnerAnnouncement.value = `${winnerName} 獲勝`;
-  finalRankings.value = (data.final_rankings || []).map((ranking, index) => ({
+  finalRankings.value = sortedRankings.map((ranking, index) => ({
     rank: ranking.rank ?? index + 1,
     player_id: ranking.player_id,
     player_name: ranking.player_name || playerNamesById.value[String(ranking.player_id)] || `玩家 ${ranking.player_id}`,
@@ -791,8 +816,21 @@ function applyGameStatePayload(payload) {
       isMyTurn.value = Boolean(payload.player.is_my_turn);
     }
 
+    if (payload.player.can_use_skill !== undefined) {
+      canUseSkill.value = Boolean(payload.player.can_use_skill);
+    }
+
+    skillDisabledReason.value = payload.player.skill_disabled_reason || '';
+
     if (handChanged) {
       selectedCardIndex.value = findSelectedCardIndex(nextHand, previousSelectedCard);
+    }
+
+    if (
+      selectedCardIndex.value !== null
+      && (!isMyTurn.value || !playableCardIndexes.value.includes(selectedCardIndex.value))
+    ) {
+      selectedCardIndex.value = null;
     }
   }
 
@@ -945,11 +983,6 @@ function submitGameAction(action, card = null, extraPayload = {}) {
   };
 
   console.log('Prepared game action payload:', payload);
-  // 樂觀更新：如果是玩家出牌，先在本地移除該張卡並更新棄牌頂
-  if (action === 'play_card' && card && Number.isInteger(card.index)) {
-    optimisticPlayLocal(card);
-  }
-
   sendGameSocketAction(payload);
 
   selectedCardIndex.value = null;
@@ -957,22 +990,6 @@ function submitGameAction(action, card = null, extraPayload = {}) {
   showTargetPickerModal.value = false;
   showReturnCardPickerModal.value = false;
   pendingTargetIndex.value = null;
-}
-
-function optimisticPlayLocal(card) {
-  try {
-    const idx = Number(card.index);
-    if (idx >= 0 && idx < playerCards.value.length) {
-      // 移除該張手牌
-      playerCards.value.splice(idx, 1);
-      // 更新顯示的棄牌頂
-      currentDiscardCard.value = card.name || currentDiscardCard.value;
-      // 清除可出牌索引，避免重複出
-      playableCardIndexes.value = [];
-    }
-  } catch (e) {
-    console.error('optimisticPlayLocal failed', e);
-  }
 }
 
 function requiresColorChoice(cardName) {
@@ -998,11 +1015,39 @@ async function leaveRoom() {
 }
 
 async function handleExitRoom() {
+  const confirmed = window.confirm('確定要離開本局遊戲嗎？離開後本局會由 AI 代打，你將無法重新加入，結算時會標記離線處罰。');
+  if (!confirmed) {
+    return;
+  }
+
+  await leaveCurrentGame();
   closeGameSocket();
   window.location.assign('/lobby?left=1');
 }
 
+function leaveCurrentGame() {
+  if (!gameSocket || gameSocket.readyState !== WebSocket.OPEN) {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    leaveGameResolver = resolve;
+    gameSocket.send(JSON.stringify({ action: 'leave_game' }));
+    window.setTimeout(() => {
+      if (leaveGameResolver === resolve) {
+        leaveGameResolver = null;
+        resolve(null);
+      }
+    }, 1500);
+  });
+}
+
 function handleCardClick(index) {
+  if (!isCardSelectable(index)) {
+    latestGameEvent.value = getCardDisabledReason(index);
+    return;
+  }
+
   selectedCardIndex.value = index;
   console.log('Selected card:', {
     index,
@@ -1012,6 +1057,12 @@ function handleCardClick(index) {
 
 function handlePlayButton() {
   if (!selectedCard.value) {
+    return;
+  }
+
+  if (!isCardSelectable(selectedCard.value.index)) {
+    latestGameEvent.value = getCardDisabledReason(selectedCard.value.index);
+    selectedCardIndex.value = null;
     return;
   }
 
@@ -1094,6 +1145,11 @@ function closeReturnCardPicker() {
 }
 
 function handleDrawCard() {
+  if (!canDraw.value) {
+    latestGameEvent.value = isMyTurn.value ? '目前不能抽牌' : '還沒輪到你，不能抽牌';
+    return;
+  }
+
   submitGameAction('draw_card');
 }
 
@@ -1110,8 +1166,8 @@ function submitSkillAction(params = {}) {
 }
 
 function handleUseSkill() {
-  if (!isMyTurn.value) {
-    latestGameEvent.value = '還沒輪到你，不能使用技能';
+  if (!canUseSkill.value) {
+    latestGameEvent.value = skillDisabledReason.value || '目前不能使用技能';
     return;
   }
 
@@ -1141,6 +1197,24 @@ function handleUseSkill() {
   }
 
   latestGameEvent.value = '目前角色沒有可使用的技能';
+}
+
+function isCardSelectable(index) {
+  return isMyTurn.value && playableCardIndexes.value.includes(index);
+}
+
+function getCardDisabledReason(index) {
+  if (!isMyTurn.value) {
+    return '還沒輪到你，不能出牌';
+  }
+
+  if (!playableCardIndexes.value.includes(index)) {
+    return drawPenalty.value > 0
+      ? `目前累加抽牌中，請接 +2 / +4 或抽 ${drawPenalty.value} 張`
+      : '這張牌目前不能出';
+  }
+
+  return '';
 }
 
 function handleSkillDiscardChoice(cardIndex) {
@@ -1329,6 +1403,8 @@ onBeforeUnmount(() => {
           :aria-pressed="selectedCardIndex === index"
           :data-selected="selectedCardIndex === index ? 'true' : 'false'"
           :style="{ ...playerCardStyle(index), ...cardImageStyle(card) }"
+          :disabled="!isCardSelectable(index)"
+          :title="getCardDisabledReason(index)"
           type="button"
           @click="handleCardClick(index)"
         >
@@ -1338,11 +1414,11 @@ onBeforeUnmount(() => {
     </section>
 
     <aside class="action-panel" aria-label="玩家操作">
-      <button class="action-btn" type="button" :disabled="!selectedCard" @click="handlePlayButton">
+      <button class="action-btn" type="button" :disabled="!selectedCard || !isCardSelectable(selectedCard.index)" @click="handlePlayButton">
         {{ playButtonLabel }}
       </button>
-      <button class="action-btn" type="button" @click="handleDrawCard">{{ drawButtonLabel }}</button>
-      <button class="action-btn" type="button" :disabled="!isMyTurn" @click="handleUseSkill">{{ skillButtonLabel }}</button>
+      <button class="action-btn" type="button" :disabled="!canDraw" @click="handleDrawCard">{{ drawButtonLabel }}</button>
+      <button class="action-btn" type="button" :disabled="!canUseSkill" :title="skillDisabledReason" @click="handleUseSkill">{{ skillButtonLabel }}</button>
     </aside>
     </div>
 
