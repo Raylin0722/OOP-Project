@@ -28,7 +28,7 @@ from .ai_client import get_ai_decision
 from .models import Room, RoomMember, MatchRecord, MatchParticipant, PlayerProfile
 
 
-AI_TURN_ACTION_REMAINING_SECONDS = 28
+AI_TURN_ACTION_REMAINING_SECONDS = 26
 
 
 class GameConsumer(AsyncWebsocketConsumer):

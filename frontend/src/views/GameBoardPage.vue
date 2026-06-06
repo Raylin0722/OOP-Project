@@ -65,6 +65,8 @@ const seerPreviewCards = ref([]);
 const seerOrderCards = ref([]);
 const seerSelectedOrder = ref([]);
 const isSkillPreviewLoading = ref(false);
+const seerOrderTouched = ref(false);
+
 const myPlayerId = ref(null);
 const matchResults = ref([]);
 const playerCards = ref([
@@ -111,6 +113,23 @@ const selectedCard = computed(() => {
     index: selectedCardIndex.value,
     name: playerCards.value[selectedCardIndex.value],
   };
+});
+
+const canSubmitSeerOrder = computed(() => {
+  const total = seerPreviewCards.value.length;
+  const selected = seerSelectedOrder.value.length;
+
+  if (total === 0) {
+    return false;
+  }
+
+  // 沒有手動排序過，可以直接用原本順序送出
+  if (!seerOrderTouched.value) {
+    return true;
+  }
+
+  // 只要開始點牌排序，就必須選滿
+  return selected === total;
 });
 
 const returnCardOptions = computed(() => (
@@ -1270,6 +1289,7 @@ function handleSkillPreview(data) {
   }));
   seerOrderCards.value = [...seerPreviewCards.value];
   seerSelectedOrder.value = [];
+  seerOrderTouched.value = false;
   showSeerOrderModal.value = true;
   latestGameEvent.value = '占卜師看見牌庫頂4張牌';
 }
@@ -1280,6 +1300,7 @@ function seerSelectionNumber(card) {
 }
 
 function toggleSeerCardSelection(card) {
+  seerOrderTouched.value = true;
   const selectedIndex = seerSelectedOrder.value.indexOf(card.originalIndex);
   if (selectedIndex >= 0) {
     seerSelectedOrder.value = seerSelectedOrder.value.filter((index) => index !== card.originalIndex);
@@ -1295,17 +1316,24 @@ function toggleSeerCardSelection(card) {
 
 function submitSeerOrder() {
   if (seerSelectedOrder.value.length !== seerPreviewCards.value.length) {
-    latestGameEvent.value = '請依序選完4張牌';
+    latestGameEvent.value = '已開始排序時，請依序選完全部牌才能送出';
     return;
   }
 
+  const finalOrder = seerOrderTouched.value
+    ? seerSelectedOrder.value
+    : seerOrderCards.value.map((card) => card.originalIndex);
+
+
   submitSkillAction({
-    new_order: seerSelectedOrder.value,
+    new_order: finalOrder,
     preview_cards: seerPreviewCards.value.map(seerCardSnapshot),
   });
+
   seerPreviewCards.value = [];
   seerOrderCards.value = [];
   seerSelectedOrder.value = [];
+  seerOrderTouched.value = false;
 }
 
 function closeSeerOrderModal() {
@@ -1704,11 +1732,10 @@ onBeforeUnmount(() => {
       <section class="seer-order-modal" aria-label="占卜師排列牌庫頂端">
         <header class="settings-header">
           <h2>占卜師</h2>
-          <button class="settings-close" type="button" @click="closeSeerOrderModal">×</button>
         </header>
 
         <div class="selected-wild-card">
-          依序點選四張牌，點已選牌可取消並讓後面順位往前。
+          不調整順序可直接確認；若開始點牌排序，請依序選完全部牌。
         </div>
 
         <div class="seer-card-grid">
@@ -1735,7 +1762,7 @@ onBeforeUnmount(() => {
         <button
           class="action-btn seer-submit-btn"
           type="button"
-          :disabled="seerSelectedOrder.length !== seerPreviewCards.length"
+          :disabled="!canSubmitSeerOrder"
           @click="submitSeerOrder"
         >
           確認排序
