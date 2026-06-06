@@ -600,18 +600,18 @@ class GameEngine:
             if card.card_type == CardType.DRAW2:
                 return True
 
-            # 檢查是否與最後一張牌有相同功能或數字
-            if len(self.discard_pile) > 0:
-                last_card = self.discard_pile[-1]
+            # # 檢查是否與最後一張牌有相同功能或數字
+            # if len(self.discard_pile) > 0:
+            #     last_card = self.discard_pile[-1]
 
-                # 相同功能類型（如：skip 對 skip, reverse 對 reverse）
-                if card.card_type == last_card.card_type:
-                    return True
+            #     # 相同功能類型（如：skip 對 skip, reverse 對 reverse）
+            #     if card.card_type == last_card.card_type:
+            #         return True
 
-                # 相同數字（僅數字牌）
-                if isinstance(card, NumberCard) and isinstance(last_card, NumberCard):
-                    if card.number == last_card.number:
-                        return True
+            #     # 相同數字（僅數字牌）
+            #     if isinstance(card, NumberCard) and isinstance(last_card, NumberCard):
+            #         if card.number == last_card.number:
+            #             return True
 
             # 不符合以上條件，無法出牌
             return False
