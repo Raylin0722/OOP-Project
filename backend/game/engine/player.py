@@ -276,6 +276,22 @@ class Player:
 
         return result
 
+    def preview_skill(self, engine, **kwargs) -> dict:
+        # 預覽技能資訊；不消耗技能、不改變冷卻。
+        if self.skill is None:
+            return {
+                'success': False,
+                'message': '此玩家沒有技能'
+            }
+
+        if not self.can_use_skill(**kwargs):
+            return {
+                'success': False,
+                'message': '技能無法使用'
+            }
+
+        return self.skill.preview(engine, **kwargs)
+
     def start_turn(self) -> None:
         # 開始新回合
         self.turn_count += 1

@@ -86,6 +86,13 @@ class SkillBehavior(ABC):
         # 執行技能效果
         pass
 
+    def preview(self, context: SkillContext, **kwargs) -> dict:
+        # 預覽技能需要的前置資訊；不改變遊戲狀態。
+        return {
+            'success': False,
+            'message': '此技能不需要預覽'
+        }
+
     def to_dict(self) -> dict:
         # 轉換為字典格式（用於序列化）
 
@@ -125,10 +132,25 @@ class SeerSkill(SkillBehavior):
         last_skill_turn_count = kwargs.get('last_skill_turn_count', -3)
         return last_skill_turn_count + self.use_interval < turn_count
 
+    def preview(self, context: SkillContext, **kwargs) -> dict:
+        top_cards = context.peek_top_cards(4)
+        if len(top_cards) < 4:
+            return {
+                'success': False,
+                'message': f'牌庫只剩 {len(top_cards)} 張牌，無法使用技能'
+            }
+
+        return {
+            'success': True,
+            'message': f'{self.name}技能預覽牌庫頂4張牌',
+            'cards_viewed': [card.to_dict() for card in top_cards]
+        }
+
     def execute_skill(self, context: SkillContext, **kwargs) -> dict:
         # 執行占卜師技能
         # Returns:執行結果
         new_order = kwargs.get('new_order')
+        preview_cards = kwargs.get('preview_cards')
 
         if new_order is None:
             return {
@@ -143,6 +165,12 @@ class SeerSkill(SkillBehavior):
             return {
                 'success': False,
                 'message': f'牌庫只剩 {len(top_cards)} 張牌，無法使用技能'
+            }
+
+        if preview_cards is not None and not self._matches_preview(top_cards, preview_cards):
+            return {
+                'success': False,
+                'message': '牌庫頂端已改變，請重新發動占卜'
             }
 
         # 驗證新順序
@@ -160,6 +188,26 @@ class SeerSkill(SkillBehavior):
             'message': f'{self.name}技能發動！重新排列牌庫頂4張牌',
             'cards_viewed': [card.to_dict() for card in top_cards]
         }
+
+    def _card_signature(self, card: 'AbstractCard') -> tuple:
+        return (card.color.value, card.value, card.card_type.value)
+
+    def _matches_preview(self, cards: List['AbstractCard'], preview_cards) -> bool:
+        if not isinstance(preview_cards, (list, tuple)) or len(preview_cards) != len(cards):
+            return False
+
+        expected = []
+        for card_data in preview_cards:
+            if not isinstance(card_data, dict):
+                return False
+            expected.append((
+                str(card_data.get('color')),
+                str(card_data.get('value')),
+                str(card_data.get('type')),
+            ))
+
+        actual = [self._card_signature(card) for card in cards]
+        return actual == expected
 
     def _validate_order(self, order: List[int], length: int) -> bool:
         # 驗證牌序是否有效

@@ -129,6 +129,13 @@ TEMPLATES = [
 ]
 
 CHANNEL_LAYER_BACKEND = os.environ.get('CHANNEL_LAYER_BACKEND', 'redis').lower()
+REDIS_SOCKET_CONNECT_TIMEOUT = float(os.environ.get('REDIS_SOCKET_CONNECT_TIMEOUT', '5'))
+REDIS_SOCKET_TIMEOUT_VALUE = os.environ.get('REDIS_SOCKET_TIMEOUT', '').strip()
+REDIS_SOCKET_TIMEOUT = (
+    None
+    if REDIS_SOCKET_TIMEOUT_VALUE == ''
+    else float(REDIS_SOCKET_TIMEOUT_VALUE)
+)
 
 if CHANNEL_LAYER_BACKEND == 'inmemory':
     CHANNEL_LAYERS = {
@@ -141,9 +148,14 @@ else:
         "default": {
             "BACKEND": "channels_redis.core.RedisChannelLayer",
             "CONFIG": {
-                "hosts": [REDIS_URL],
-                "capacity": 1500,  
-                "expiry": 10,      
+                "hosts": [{
+                    "address": REDIS_URL,
+                    "socket_timeout": REDIS_SOCKET_TIMEOUT,
+                    "socket_connect_timeout": REDIS_SOCKET_CONNECT_TIMEOUT,
+                }],
+                "capacity": 1500,
+                "expiry": int(os.environ.get('CHANNEL_LAYER_EXPIRY', '60')),
+                "group_expiry": int(os.environ.get('CHANNEL_LAYER_GROUP_EXPIRY', '86400')),
             },
         },
     }

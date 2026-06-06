@@ -26,6 +26,7 @@ const showColorPickerModal = ref(false);
 const showTargetPickerModal = ref(false);
 const showReturnCardPickerModal = ref(false);
 const showSkillDiscardPickerModal = ref(false);
+const showSeerOrderModal = ref(false);
 const showGameOverModal = ref(false);
 const boardScale = ref(1);
 let gameSocket = null;
@@ -60,6 +61,10 @@ const canDraw = computed(() => isMyTurn.value);
 const canUseSkill = ref(false);
 const skillDisabledReason = ref('');
 const latestGameEvent = ref('');
+const seerPreviewCards = ref([]);
+const seerOrderCards = ref([]);
+const seerSelectedOrder = ref([]);
+const isSkillPreviewLoading = ref(false);
 const myPlayerId = ref(null);
 const matchResults = ref([]);
 const playerCards = ref([
@@ -113,6 +118,47 @@ const returnCardOptions = computed(() => (
     .map((name, index) => ({ name, index }))
     .filter((card) => card.index !== selectedCard.value?.index)
 ));
+
+function seerCardDisplayName(card) {
+  if (!card) {
+    return '';
+  }
+
+  if (typeof card === 'string') {
+    return normalizeDisplayCardName(card);
+  }
+
+  const colorMap = {
+    red: '紅',
+    blue: '藍',
+    yellow: '黃',
+    green: '綠',
+    black: '',
+  };
+  const valueMap = {
+    draw2: '+2',
+    wild: '萬用',
+    wild_draw4: '抽四',
+    skip: '跳過',
+    reverse: '反轉',
+    swap_hand: '換手',
+    steal_card: '偷牌',
+    neighbor_swap: '鄰抽',
+    target_draw2: '指抽二',
+  };
+
+  const color = colorMap[String(card.color || '').toLowerCase()] ?? '';
+  const value = valueMap[String(card.value || card.type || '').toLowerCase()] || card.value || card.type || '';
+  return normalizeDisplayCardName(color ? `${color} ${value}` : value);
+}
+
+function seerCardSnapshot(card) {
+  return {
+    color: String(card?.color || ''),
+    value: String(card?.value || ''),
+    type: String(card?.type || ''),
+  };
+}
 
 const playButtonLabel = computed(() => {
   if (!selectedCard.value) {
@@ -448,6 +494,11 @@ function connectGameSocket() {
       return;
     }
 
+    if (data.type === 'skill_preview') {
+      handleSkillPreview(data);
+      return;
+    }
+
       if (data.type === 'match_results') {
         handleMatchResults(data.results || data.results);
         return;
@@ -462,6 +513,7 @@ function connectGameSocket() {
     if (data.type === 'error') {
         console.error('Game socket error:', data.message);
         latestGameEvent.value = data.message || '遊戲操作失敗';
+        isSkillPreviewLoading.value = false;
         // 伺服器回傳錯誤：重新拉一次 server 的遊戲狀態以回滾任何樂觀更新
         try {
           sendGameSocketAction({ action: 'get_state' });
@@ -1161,8 +1213,74 @@ function submitSkillAction(params = {}) {
 
   showColorPickerModal.value = false;
   showSkillDiscardPickerModal.value = false;
+  showSeerOrderModal.value = false;
   pendingColorAction.value = 'card';
   selectedCardIndex.value = null;
+}
+
+function requestSkillPreview() {
+  isSkillPreviewLoading.value = true;
+  sendGameSocketAction({
+    action: 'preview_skill',
+  });
+}
+
+function handleSkillPreview(data) {
+  isSkillPreviewLoading.value = false;
+  if (String(data.skill_code || '').toLowerCase() !== 'seer') {
+    latestGameEvent.value = data.message || '技能預覽完成';
+    return;
+  }
+
+  seerPreviewCards.value = (data.cards_viewed || []).map((card, index) => ({
+    ...card,
+    originalIndex: index,
+    displayName: seerCardDisplayName(card),
+  }));
+  seerOrderCards.value = [...seerPreviewCards.value];
+  seerSelectedOrder.value = [];
+  showSeerOrderModal.value = true;
+  latestGameEvent.value = '占卜師看見牌庫頂4張牌';
+}
+
+function seerSelectionNumber(card) {
+  const selectedIndex = seerSelectedOrder.value.indexOf(card.originalIndex);
+  return selectedIndex >= 0 ? selectedIndex + 1 : null;
+}
+
+function toggleSeerCardSelection(card) {
+  const selectedIndex = seerSelectedOrder.value.indexOf(card.originalIndex);
+  if (selectedIndex >= 0) {
+    seerSelectedOrder.value = seerSelectedOrder.value.filter((index) => index !== card.originalIndex);
+    return;
+  }
+
+  if (seerSelectedOrder.value.length >= seerPreviewCards.value.length) {
+    return;
+  }
+
+  seerSelectedOrder.value = [...seerSelectedOrder.value, card.originalIndex];
+}
+
+function submitSeerOrder() {
+  if (seerSelectedOrder.value.length !== seerPreviewCards.value.length) {
+    latestGameEvent.value = '請依序選完4張牌';
+    return;
+  }
+
+  submitSkillAction({
+    new_order: seerSelectedOrder.value,
+    preview_cards: seerPreviewCards.value.map(seerCardSnapshot),
+  });
+  seerPreviewCards.value = [];
+  seerOrderCards.value = [];
+  seerSelectedOrder.value = [];
+}
+
+function closeSeerOrderModal() {
+  showSeerOrderModal.value = false;
+  isSkillPreviewLoading.value = false;
+  seerSelectedOrder.value = [];
 }
 
 function handleUseSkill() {
@@ -1185,9 +1303,7 @@ function handleUseSkill() {
   }
 
   if (skillCode === 'seer') {
-    // 目前後端技能需要 new_order。先提供預設順序，讓技能流程可用；
-    // 後續若要做拖曳排序，可以把這裡改成自訂 new_order。
-    submitSkillAction({ new_order: [0, 1, 2, 3] });
+    requestSkillPreview();
     return;
   }
 
@@ -1418,7 +1534,7 @@ onBeforeUnmount(() => {
         {{ playButtonLabel }}
       </button>
       <button class="action-btn" type="button" :disabled="!canDraw" @click="handleDrawCard">{{ drawButtonLabel }}</button>
-      <button class="action-btn" type="button" :disabled="!canUseSkill" :title="skillDisabledReason" @click="handleUseSkill">{{ skillButtonLabel }}</button>
+      <button class="action-btn" type="button" :disabled="!canUseSkill || isSkillPreviewLoading" :title="skillDisabledReason" @click="handleUseSkill">{{ skillButtonLabel }}</button>
     </aside>
     </div>
 
@@ -1550,6 +1666,49 @@ onBeforeUnmount(() => {
             <span>丟棄</span>
           </button>
         </div>
+      </section>
+    </div>
+
+    <div v-if="showSeerOrderModal" class="settings-backdrop">
+      <section class="seer-order-modal" aria-label="占卜師排列牌庫頂端">
+        <header class="settings-header">
+          <h2>占卜師</h2>
+          <button class="settings-close" type="button" @click="closeSeerOrderModal">×</button>
+        </header>
+
+        <div class="selected-wild-card">
+          依序點選四張牌，點已選牌可取消並讓後面順位往前。
+        </div>
+
+        <div class="seer-card-grid">
+          <button
+            v-for="(card, index) in seerOrderCards"
+            :key="`seer-${card.originalIndex}-${card.displayName}`"
+            class="seer-card-choice"
+            :class="{ 'is-selected': seerSelectionNumber(card) }"
+            type="button"
+            @click="toggleSeerCardSelection(card)"
+          >
+            <div
+              class="game-card seer-preview-card"
+              :class="{ 'image-fill': cardAssetUrl(card.displayName) }"
+              :style="cardImageStyle(card.displayName)"
+            >
+              <span class="card-label">{{ displayCardLabel(card.displayName) }}</span>
+            </div>
+            <span v-if="seerSelectionNumber(card)" class="seer-order-badge">{{ seerSelectionNumber(card) }}</span>
+            <strong>{{ displayCardLabel(card.displayName) }}</strong>
+          </button>
+        </div>
+
+        <button
+          class="action-btn seer-submit-btn"
+          type="button"
+          :disabled="seerSelectedOrder.length !== seerPreviewCards.length"
+          @click="submitSeerOrder"
+        >
+          確認排序
+        </button>
       </section>
     </div>
 
@@ -2084,6 +2243,86 @@ onBeforeUnmount(() => {
   color: #f8fafc;
   background: rgba(8, 3, 18, 0.96);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.seer-order-modal {
+  width: min(620px, calc(100vw - 32px));
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(248, 250, 252, 0.8);
+  border-radius: 8px;
+  color: #f8fafc;
+  background: rgba(8, 3, 18, 0.96);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.seer-card-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.seer-card-choice {
+  position: relative;
+  min-height: 148px;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 8px;
+  padding: 10px 8px;
+  border: 1px solid rgba(248, 250, 252, 0.28);
+  border-radius: 8px;
+  color: #f8fafc;
+  background: rgba(248, 250, 252, 0.06);
+  cursor: pointer;
+}
+
+.seer-card-choice:hover {
+  background: rgba(38, 28, 66, 0.9);
+}
+
+.seer-card-choice.is-selected {
+  border-color: #fde68a;
+  box-shadow: 0 0 0 2px rgba(253, 230, 138, 0.78);
+}
+
+.seer-preview-card {
+  position: relative;
+  width: var(--card-width);
+  height: var(--card-height);
+  min-width: var(--card-width);
+  padding: 8px 0 0 8px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.seer-order-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(248, 250, 252, 0.96);
+  border-radius: 999px;
+  color: #080312;
+  background: #fde68a;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.seer-card-choice strong {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.seer-submit-btn {
+  width: 100%;
 }
 
 .game-over-modal {

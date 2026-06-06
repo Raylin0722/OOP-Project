@@ -93,6 +93,8 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self.handle_draw_card()
             elif action == 'use_skill':
                 await self.handle_use_skill(data)
+            elif action == 'preview_skill':
+                await self.handle_preview_skill()
             elif action == 'force_settlement':
                 await self.handle_force_settlement()
             elif action == 'leave_game':
@@ -632,6 +634,47 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         # Run AI turns asynchronously so we don't block this handler
         asyncio.create_task(self._run_test_ai_turns(engine))
+
+    async def handle_preview_skill(self):
+        # 預覽技能資訊，只回傳給目前玩家本人，不改變遊戲狀態。
+        engine = GameConsumer.game_engines.get(self.room_code)
+        if not engine:
+            await self.send_error('Game not started')
+            return
+
+        if engine.check_timeout():
+            result = engine.force_end_game()
+            await self._finish_game(engine, result)
+            return
+
+        current_player = engine.get_current_player()
+        if str(current_player.player_id) != str(self.user.id):
+            await self.send_error('Not your turn')
+            return
+
+        skill_check_params = {
+            'has_draw_penalty': engine.draw_penalty > 0
+        }
+
+        result = current_player.preview_skill(engine, **skill_check_params)
+        if not result.get('success'):
+            await self.send_error(result.get('message', 'Cannot preview skill'))
+            return
+
+        skill_code_map = {
+            'SeerSkill': 'seer',
+            'PainterSkill': 'painter',
+            'ScoutSkill': 'scout',
+            'QueenSkill': 'queen',
+        }
+        skill = current_player.skill
+        await self.send(text_data=json.dumps({
+            'type': 'skill_preview',
+            'skill_name': skill.name if skill else '',
+            'skill_code': skill_code_map.get(skill.__class__.__name__, 'none') if skill else 'none',
+            **result,
+        }))
+
     def _normalize_skill_params(self, current_player, skill_params):
         """Normalize frontend skill parameters into engine-level objects.
 
