@@ -106,14 +106,22 @@ TEMPLATES = [
     },
 ]
 
-# 這裡先用記憶體模擬 Redis，方便你沒開 Docker 也能跑，
-# 但正式開發建議改用 redis://redis:6379
-CHANNEL_LAYERS = {
-    "default": {
-        # "BACKEND": "channels.layers.InMemoryChannelLayer",
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [REDIS_URL],
+CHANNEL_LAYER_BACKEND = os.environ.get('CHANNEL_LAYER_BACKEND', 'redis').lower()
+
+if CHANNEL_LAYER_BACKEND == 'inmemory':
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
         },
-    },
-}
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [REDIS_URL],
+                "capacity": 1500,  
+                "expiry": 10,      
+            },
+        },
+    }

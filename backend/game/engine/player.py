@@ -65,7 +65,7 @@ class HandManager:
         if draw_penalty > 0:
             for card in self._cards:
                 # 只能打出 Draw2 (且顏色相同) 或 WildDraw4
-                if card.card_type == CardType.DRAW2 and card.color == current_color:
+                if card.card_type == CardType.DRAW2:
                     playable.append(card)
                 elif card.card_type == CardType.WILD_DRAW4:
                     playable.append(card)
@@ -178,6 +178,8 @@ class Player:
 
         # 技能使用統計
         self.skill_used_count = 0
+        self.skill_used_this_turn = False
+        self.finished_rank: Optional[int] = None
 
     def play_card(self, card: 'AbstractCard') -> Optional['AbstractCard']:
         # 打出一張牌
@@ -218,9 +220,16 @@ class Player:
         return not self.hand_manager.is_empty()
 
     def has_won(self) -> bool:
-        # 檢查是否獲勝(手牌為空)
+        # Backward-compatible alias for finished-state checks.
+        return self.has_finished()
 
-        return self.hand_manager.is_empty()
+    def has_finished(self) -> bool:
+        # 檢查是否已經完成出牌並被記錄名次。
+        return self.finished_rank is not None
+
+    def mark_finished(self, rank: int) -> None:
+        # 標記玩家已完成出牌。
+        self.finished_rank = rank
 
     def get_hand(self) -> HandManager:
         # 取得手牌管理器
@@ -231,6 +240,9 @@ class Player:
         # 檢查是否可以使用技能
 
         if self.skill is None:
+            return False
+
+        if self.skill_used_this_turn:
             return False
 
         return self.skill.can_use(self.turn_count, **kwargs)
@@ -254,12 +266,14 @@ class Player:
 
         if result.get('success'):
             self.skill_used_count += 1
+            self.skill_used_this_turn = True
 
         return result
 
     def start_turn(self) -> None:
         # 開始新回合
         self.turn_count += 1
+        self.skill_used_this_turn = False
 
     def increment_turn(self) -> None:
         # 增加回合計數
@@ -272,8 +286,13 @@ class Player:
     def reset_skill(self) -> None:
         # 重置技能狀態(新遊戲開始時)
         self.skill_used_count = 0
+        self.skill_used_this_turn = False
         if self.skill and hasattr(self.skill, 'reset'):
             self.skill.reset()
+
+    def reset_finished_state(self) -> None:
+        # 重置出完牌狀態(新遊戲開始時)
+        self.finished_rank = None
 
     def swap_hands_with(self, other: 'Player') -> None:
         # 與另一個玩家交換手牌
@@ -290,6 +309,9 @@ class Player:
             'is_ai': self.is_ai,
             'turn_count': self.turn_count,
             'skill_used_count': self.skill_used_count,
+            'skill_used_this_turn': self.skill_used_this_turn,
+            'finished_rank': self.finished_rank,
+            'has_finished': self.has_finished(),
         }
 
     def __str__(self) -> str:

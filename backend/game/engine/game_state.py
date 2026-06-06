@@ -15,22 +15,42 @@ class PlayerState:
     player_id: str
     name: str
     hand_size: int  # 手牌數量（不暴露具體牌）
+    skill_code: str
     skill_name: str
     skill_used_count: int
     turn_count: int
+    is_disconnected: bool
+    is_ai_replacement: bool
+    settlement_penalty: bool
+    has_finished: bool
+    finished_rank: Optional[int]
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @staticmethod
     def from_player(player: 'Player') -> 'PlayerState':
+        skill_code_map = {
+            'SeerSkill': 'seer',
+            'PainterSkill': 'painter',
+            'ScoutSkill': 'scout',
+            'QueenSkill': 'queen',
+        }
+        skill_code = skill_code_map.get(player.skill.__class__.__name__, 'none') if player.skill else 'none'
+
         return PlayerState(
             player_id=player.player_id,
             name=player.name,
             hand_size=player.get_hand_size(),
+            skill_code=skill_code,
             skill_name=player.skill.name if player.skill else "None",
             skill_used_count=player.skill_used_count,
             turn_count=player.turn_count,
+            is_disconnected=bool(getattr(player, 'is_disconnected', False)),
+            is_ai_replacement=bool(getattr(player, 'is_ai_replacement', False)),
+            settlement_penalty=bool(getattr(player, 'settlement_penalty', False)),
+            has_finished=bool(player.has_finished()),
+            finished_rank=getattr(player, 'finished_rank', None),
         )
 
 
@@ -64,6 +84,8 @@ class GameState:
     game_start_time: Optional[str]  # ISO格式時間
     time_limit_seconds: int  # 時間限制(秒)
     remaining_seconds: Optional[int]  # 剩餘秒數
+    current_turn_started_at: Optional[str]  # 目前回合開始時間 (ISO格式)
+    turn_time_limit_seconds: int  # 單回合時間限制(秒)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -84,12 +106,12 @@ class GameState:
 
         # 建立獲勝者列表
         winners_list = [
-            {'player_id': player.player_id, 'rank': rank}
+            {'player_id': player.player_id, 'player_name': player.name, 'rank': rank}
             for player, rank in engine.winners
         ]
 
         # 計算剩餘時間
-        remaining_time = engine.get_remaining_time()
+        remaining_time = engine.get_turn_remaining_time()
         remaining_seconds = int(remaining_time.total_seconds()) if remaining_time else None
 
         return GameState(
@@ -109,6 +131,8 @@ class GameState:
             game_start_time=engine.game_start_time.isoformat() if engine.game_start_time else None,
             time_limit_seconds=int(engine.game_time_limit.total_seconds()),
             remaining_seconds=remaining_seconds,
+            current_turn_started_at=engine.current_turn_started_at.isoformat() if engine.current_turn_started_at else None,
+            turn_time_limit_seconds=int(engine.turn_time_limit.total_seconds()),
         )
 
 

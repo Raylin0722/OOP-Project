@@ -395,8 +395,8 @@
                 return;
             }
 
-            // 使用 ws:// 因為是本地開發
-            const wsUrl = `ws://localhost:8000/ws/game/${roomCode}/`;
+            const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const wsUrl = `${wsScheme}://${window.location.host}/ws/game/${roomCode}/`;
             log(`正在連接: ${wsUrl}`, 'info');
 
             ws = new WebSocket(wsUrl);

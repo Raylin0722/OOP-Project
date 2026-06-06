@@ -35,23 +35,27 @@ class RoomConsumer(AsyncWebsocketConsumer):
             await self.close()
             return
 
-        await self._send_room_update()
+        await self._send_room_update(event.get('payload') or {})
 
     async def room_deleted(self, event):
         await self.send(text_data=json.dumps({'type': 'room_deleted'}))
         await self.close()
 
-    async def _send_room_update(self):
+    async def _send_room_update(self, extra_payload=None):
         room = await self._room_payload()
         if room is None:
             await self.send(text_data=json.dumps({'type': 'room_deleted'}))
             await self.close()
             return
 
-        await self.send(text_data=json.dumps({
+        payload = {
             'type': 'room_update',
             'room': room,
-        }))
+        }
+        if extra_payload:
+            payload.update(extra_payload)
+
+        await self.send(text_data=json.dumps(payload))
 
     @database_sync_to_async
     def _is_room_member(self):

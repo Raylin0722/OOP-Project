@@ -7,7 +7,8 @@ import LobbyActionButtons from '../components/LobbyActionButtons.vue';
 import hallImage from '../assets/pictures/hall.png';
 
 const API_BASE = `http://${window.location.hostname}:8000/api`;
-const WS_BASE = `ws://${window.location.hostname}:8000/ws`;
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss' : 'ws';
+const WS_BASE = `${WS_PROTOCOL}://${window.location.hostname}:8000/ws`;
 const router = useRouter();
 const route = useRoute();
 
@@ -18,7 +19,14 @@ const loading = ref(false);
 const roomBusy = ref(false);
 const errorMessage = ref('');
 const showStatsPanel = ref(false);
+const matchmakingTicket = ref(null);
+const matchmakingTick = ref(0);
 let roomSocket = null;
+let matchmakingSocket = null;
+let lobbyPollId = null;
+let matchmakingTimerId = null;
+let matchmakingStatusPollId = null;
+let matchmakingReconnectTimerId = null;
 
 const currentMember = computed(() => {
   if (!currentUser.value || !currentRoom.value) {
@@ -38,6 +46,38 @@ const seats = computed(() => {
   return [...members, ...emptySeats];
 });
 
+const isMatchmaking = computed(() => Boolean(matchmakingTicket.value));
+const matchmakingStatusText = computed(() => {
+  if (!matchmakingTicket.value) {
+    return '';
+  }
+
+  const waitedFor = getMatchmakingWaitedSeconds();
+  const timeout = matchmakingTicket.value.timeout_seconds ?? 30;
+  const scoreWindow = matchmakingTicket.value.score_window ?? 0;
+  return `配對中：已等待 ${waitedFor}/${timeout} 秒，分數範圍 ±${scoreWindow}`;
+});
+
+const roomStartLabel = computed(() => (
+  (currentRoom.value?.member_count ?? 0) >= 4 ? '開始遊戲' : '開始配對'
+));
+
+function handleUnauthorized() {
+  currentUser.value = null;
+  currentRoom.value = null;
+  localStorage.removeItem('authToken');
+  stopLobbyPolling();
+  stopMatchmakingTimer();
+  stopMatchmakingStatusPolling();
+  closeRoomSocket();
+  closeMatchmakingSocket();
+
+  router.push({
+    path: '/auth',
+    query: { reason: 'login_required' },
+  });
+}
+
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     credentials: 'include',
@@ -48,6 +88,11 @@ async function request(path, options = {}) {
     ...options,
   });
   const data = await response.json().catch(() => ({}));
+
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error(data.error?.message || '請先登入。');
+  }
 
   if (!response.ok) {
     throw new Error(data.error?.message || 'Request failed.');
@@ -73,6 +118,225 @@ function closeRoomSocket() {
   }
 }
 
+function closeMatchmakingSocket() {
+  if (matchmakingReconnectTimerId) {
+    window.clearTimeout(matchmakingReconnectTimerId);
+    matchmakingReconnectTimerId = null;
+  }
+
+  if (matchmakingSocket) {
+    matchmakingSocket.close();
+    matchmakingSocket = null;
+  }
+}
+
+function setMatchmakingTicket(ticket) {
+  matchmakingTicket.value = ticket ? {
+    ...ticket,
+    local_started_at: ticket.local_started_at || Date.now(),
+  } : null;
+
+  if (matchmakingTicket.value) {
+    startMatchmakingTimer();
+    startMatchmakingStatusPolling();
+  } else {
+    stopMatchmakingTimer();
+    stopMatchmakingStatusPolling();
+  }
+}
+
+function getMatchmakingWaitedSeconds() {
+  matchmakingTick.value;
+  const ticket = matchmakingTicket.value;
+  if (!ticket) {
+    return 0;
+  }
+
+  const serverWaitedFor = Number(ticket.waited_for ?? 0);
+  const localStartedAt = Number(ticket.local_started_at || Date.now());
+  const localElapsed = Math.floor((Date.now() - localStartedAt) / 1000);
+  return Math.max(0, serverWaitedFor + localElapsed);
+}
+
+function startMatchmakingTimer() {
+  if (matchmakingTimerId) {
+    return;
+  }
+
+  matchmakingTimerId = window.setInterval(() => {
+    matchmakingTick.value += 1;
+  }, 1000);
+}
+
+function stopMatchmakingTimer() {
+  if (matchmakingTimerId) {
+    window.clearInterval(matchmakingTimerId);
+    matchmakingTimerId = null;
+  }
+}
+
+function startMatchmakingStatusPolling() {
+  if (matchmakingStatusPollId) {
+    return;
+  }
+
+  // WebSocket 是主要通知方式；這個 polling 只做保險同步，避免漏掉 matched 事件時卡在等待畫面。
+  matchmakingStatusPollId = window.setInterval(async () => {
+    if (!matchmakingTicket.value) {
+      stopMatchmakingStatusPolling();
+      return;
+    }
+
+    try {
+      await loadMatchmakingStatus();
+    } catch (err) {
+      console.error('[matchmaking] failed to sync status:', err);
+    }
+  }, 2000);
+}
+
+function stopMatchmakingStatusPolling() {
+  if (matchmakingStatusPollId) {
+    window.clearInterval(matchmakingStatusPollId);
+    matchmakingStatusPollId = null;
+  }
+}
+
+function normalizeMatchmakingMessage(rawData) {
+  if (!rawData || typeof rawData !== 'object') {
+    return {};
+  }
+
+  // 後端可能送：
+  // 1. { type: 'matched', room: {...} }
+  // 2. { type: 'matchmaking_updated', payload: { type: 'matched', room: {...} } }
+  // 3. { type: 'matchmaking.update', payload: { type: 'matched', room: {...} } }
+  // 這裡統一攤平成前端好處理的格式。
+  const payload = rawData.payload && typeof rawData.payload === 'object'
+    ? rawData.payload
+    : null;
+
+  if (payload) {
+    return {
+      ...payload,
+      ws_type: rawData.type,
+    };
+  }
+
+  return rawData;
+}
+
+function handleMatchmakingMessage(rawData) {
+  const data = normalizeMatchmakingMessage(rawData);
+  console.log('[matchmaking-ws] message:', data);
+
+  if (data.type === 'matched' && data.room) {
+    setMatchmakingTicket(null);
+    setRoom(data.room);
+    handlePlayingRoomNavigation(data.room, Boolean(data.room.test_mode), {
+      forceEnter: true,
+    });
+    return;
+  }
+
+  if (data.room) {
+    setMatchmakingTicket(null);
+    setRoom(data.room);
+    handlePlayingRoomNavigation(data.room, Boolean(data.room.test_mode), {
+      forceEnter: data.room.status === 'Playing',
+    });
+    return;
+  }
+
+  if (data.type === 'waiting' || data.ticket) {
+    setMatchmakingTicket(data.ticket);
+    return;
+  }
+
+  if (data.type === 'cancelled' || data.type === 'idle') {
+    setMatchmakingTicket(null);
+  }
+}
+
+function connectMatchmakingSocket() {
+  if (
+    matchmakingSocket
+    && [WebSocket.OPEN, WebSocket.CONNECTING].includes(matchmakingSocket.readyState)
+  ) {
+    return;
+  }
+
+  if (matchmakingReconnectTimerId) {
+    window.clearTimeout(matchmakingReconnectTimerId);
+    matchmakingReconnectTimerId = null;
+  }
+
+  matchmakingSocket = new WebSocket(`${WS_BASE}/matchmaking/`);
+
+  matchmakingSocket.onopen = () => {
+    console.log('[matchmaking-ws] connected');
+  };
+
+  matchmakingSocket.onmessage = (event) => {
+    try {
+      handleMatchmakingMessage(JSON.parse(event.data));
+    } catch (err) {
+      console.error('[matchmaking-ws] invalid message:', event.data, err);
+    }
+  };
+
+  matchmakingSocket.onerror = (error) => {
+    console.error('[matchmaking-ws] error:', error);
+  };
+
+  matchmakingSocket.onclose = () => {
+    console.log('[matchmaking-ws] closed');
+    matchmakingSocket = null;
+
+    // 配對中如果 socket 意外斷線，自動重連，避免錯過後端 matched 事件。
+    if (matchmakingTicket.value && !matchmakingReconnectTimerId) {
+      matchmakingReconnectTimerId = window.setTimeout(() => {
+        matchmakingReconnectTimerId = null;
+        connectMatchmakingSocket();
+      }, 1000);
+    }
+  };
+}
+
+function goToGameRoom(room, testMode = false) {
+  if (!room?.code) {
+    return;
+  }
+
+  router.push({
+    path: '/game-ui',
+    query: {
+      room: room.code,
+      ...(testMode ? { test: '1' } : {}),
+    },
+  });
+}
+
+function shouldStayInLobbyAfterLeavingGame() {
+  return route.query.left === '1';
+}
+
+function handlePlayingRoomNavigation(room, testMode = false, options = {}) {
+  if (room?.status !== 'Playing') {
+    return;
+  }
+
+  if (room.game_status?.reconnect_blocked) {
+    errorMessage.value = room.game_status.reason || '此局已由 AI 代打，需等本局結束才能開始新遊戲。';
+    return;
+  }
+
+  const shouldAutoEnter = options.forceEnter || !shouldStayInLobbyAfterLeavingGame();
+  if (shouldAutoEnter && room.game_status?.auto_enter !== false) {
+    goToGameRoom(room, testMode || Boolean(room.test_mode));
+  }
+}
+
 function connectRoomSocket(code) {
   if (roomSocket?.roomCode === code) {
     return;
@@ -85,7 +349,13 @@ function connectRoomSocket(code) {
   roomSocket.onmessage = (event) => {
     const data = JSON.parse(event.data);
     if (data.type === 'room_update') {
+      const wasPlaying = currentRoom.value?.status === 'Playing';
       currentRoom.value = data.room;
+      console.log('Room update:', data);
+
+      handlePlayingRoomNavigation(data.room, Boolean(data.test_mode || data.room?.test_mode), {
+        forceEnter: !wasPlaying,
+      });
     }
     if (data.type === 'room_left' || data.type === 'room_deleted') {
       setRoom(null);
@@ -103,19 +373,48 @@ async function loadCurrentRoom() {
   const data = await request('/rooms/current/');
   setRoom(data.room);
 
-  if (data.room?.status === 'Playing' && route.query.left !== '1') {
-    router.push({ path: '/game-ui', query: { room: data.room.code } });
+  handlePlayingRoomNavigation(data.room, Boolean(data.room?.test_mode));
+}
+
+function startLobbyPolling() {
+  stopLobbyPolling();
+  lobbyPollId = window.setInterval(async () => {
+    if (!currentRoom.value) {
+      return;
+    }
+
+    try {
+      const wasPlaying = currentRoom.value?.status === 'Playing';
+      const data = await request('/rooms/current/');
+      console.log('Lobby poll:', data);
+      setRoom(data.room);
+      handlePlayingRoomNavigation(data.room, Boolean(data.room?.test_mode), {
+        forceEnter: !wasPlaying,
+      });
+    } catch (err) {
+      console.error('Failed to poll current room:', err);
+    }
+  }, 1500);
+}
+
+function stopLobbyPolling() {
+  if (lobbyPollId) {
+    window.clearInterval(lobbyPollId);
+    lobbyPollId = null;
   }
 }
 
 async function submitLogout() {
   loading.value = true;
+  stopLobbyPolling();
+  closeRoomSocket();
+  closeMatchmakingSocket();
+  setMatchmakingTicket(null);
   try {
     await request('/auth/logout/', {
       method: 'POST',
       body: JSON.stringify({}),
     });
-    closeRoomSocket();
     currentUser.value = null;
     localStorage.removeItem('authToken');
     router.push('/auth');
@@ -134,6 +433,7 @@ async function createRoom() {
       method: 'POST',
       body: JSON.stringify({}),
     });
+    setMatchmakingTicket(null);
     setRoom(data.room);
   } catch (err) {
     errorMessage.value = err.message;
@@ -156,6 +456,7 @@ async function joinRoom() {
       method: 'POST',
       body: JSON.stringify({ code }),
     });
+    setMatchmakingTicket(null);
     setRoom(data.room);
   } catch (err) {
     errorMessage.value = err.message;
@@ -216,8 +517,18 @@ async function startGame() {
       method: 'POST',
       body: JSON.stringify({}),
     });
+    if (data.ticket) {
+      setMatchmakingTicket(data.ticket);
+      setRoom(null);
+      connectMatchmakingSocket();
+      return;
+    }
+
+    setMatchmakingTicket(null);
     setRoom(data.room);
-    router.push({ path: '/game-ui', query: { room: data.room.code } });
+    handlePlayingRoomNavigation(data.room, Boolean(data.room?.test_mode), {
+      forceEnter: true,
+    });
   } catch (err) {
     errorMessage.value = err.message;
   } finally {
@@ -225,18 +536,83 @@ async function startGame() {
   }
 }
 
-function startTestGame() {
+async function startTestGame() {
   if (!currentRoom.value) {
     return;
   }
 
-  router.push({
-    path: '/game-ui',
-    query: {
-      room: currentRoom.value.code,
-      test: '1',
-    },
+  roomBusy.value = true;
+  errorMessage.value = '';
+  try {
+    const data = await request(`/rooms/${currentRoom.value.code}/start/`, {
+      method: 'POST',
+      body: JSON.stringify({ test_mode: true }),
+    });
+    setRoom(data.room);
+    router.push({
+      path: '/game-ui',
+      query: {
+        room: data.room.code,
+        test: '1',
+      },
+    });
+  } catch (err) {
+    errorMessage.value = err.message;
+  } finally {
+    roomBusy.value = false;
+  }
+}
+
+async function joinMatchmaking() {
+  roomBusy.value = true;
+  errorMessage.value = '';
+  try {
+    connectMatchmakingSocket();
+    const data = await request('/matchmaking/join/', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    handleMatchmakingMessage({
+      type: data.room ? 'matched' : 'waiting',
+      ...data,
+    });
+  } catch (err) {
+    errorMessage.value = err.message;
+  } finally {
+    roomBusy.value = false;
+  }
+}
+
+async function cancelMatchmaking() {
+  roomBusy.value = true;
+  errorMessage.value = '';
+  try {
+    const data = await request('/matchmaking/cancel/', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    handleMatchmakingMessage({ type: 'cancelled', ...data });
+  } catch (err) {
+    errorMessage.value = err.message;
+  } finally {
+    roomBusy.value = false;
+  }
+}
+
+async function loadMatchmakingStatus() {
+  const data = await request('/matchmaking/status/');
+  handleMatchmakingMessage({
+    type: data.room ? 'matched' : (data.ticket ? 'waiting' : 'idle'),
+    ...data,
   });
+}
+
+function returnToGame() {
+  if (currentRoom.value?.game_status?.reconnect_blocked) {
+    errorMessage.value = currentRoom.value.game_status.reason || '此局已由 AI 代打，無法重新加入。';
+    return;
+  }
+  goToGameRoom(currentRoom.value);
 }
 
 function toggleStatsPanel() {
@@ -247,7 +623,10 @@ onMounted(async () => {
   try {
     const data = await request('/auth/me/');
     currentUser.value = data.user;
+    connectMatchmakingSocket();
     await loadCurrentRoom();
+    await loadMatchmakingStatus();
+    startLobbyPolling();
   } catch (err) {
     console.error('Failed to load lobby:', err);
     router.push('/auth');
@@ -255,7 +634,11 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  stopLobbyPolling();
+  stopMatchmakingTimer();
+  stopMatchmakingStatusPolling();
   closeRoomSocket();
+  closeMatchmakingSocket();
 });
 </script>
 
@@ -294,6 +677,7 @@ onBeforeUnmount(() => {
         </div>
 
         <p v-if="errorMessage" class="error-message">{{ errorMessage }}</p>
+        <p v-if="matchmakingStatusText" class="matchmaking-message">{{ matchmakingStatusText }}</p>
 
         <div v-if="currentRoom" class="room-content">
           <div class="seat-grid">
@@ -316,10 +700,14 @@ onBeforeUnmount(() => {
             :in-room="true"
             :is-ready="!!currentMember?.is_ready"
             :can-start="!!currentRoom.can_start"
+            :is-playing="currentRoom.status === 'Playing'"
+            :is-host="!!currentMember?.is_host"
+            :start-label="roomStartLabel"
             @toggle-ready="toggleReady"
             @start-game="startGame"
             @test-start="startTestGame"
             @leave-room="leaveRoom"
+            @return-game="returnToGame"
           />
         </div>
 
@@ -337,8 +725,11 @@ onBeforeUnmount(() => {
 
           <LobbyActionButtons
             :busy="roomBusy"
+            :is-matchmaking="isMatchmaking"
             @create-room="createRoom"
             @join-room="joinRoom"
+            @join-matchmaking="joinMatchmaking"
+            @cancel-matchmaking="cancelMatchmaking"
           />
         </div>
       </section>
@@ -453,6 +844,16 @@ onBeforeUnmount(() => {
   background: #fee2e2;
   color: #991b1b;
   font-size: 14px;
+}
+
+.matchmaking-message {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .room-content {
