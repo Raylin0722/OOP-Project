@@ -1,9 +1,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
-const API_BASE = 'http://127.0.0.1:8000/api';
+const API_BASE = `http://${window.location.hostname}:8000/api`;
 const router = useRouter();
+const route = useRoute();
 
 const activeTab = ref('register');
 const loading = ref(false);
@@ -173,7 +174,7 @@ async function submitLogin() {
     currentUser.value = data.user;
     localStorage.setItem('authToken', 'true');
     clearLoginForm();
-    router.push('/lobby');
+    router.push(typeof route.query.redirect === 'string' ? route.query.redirect : '/lobby');
   } catch (err) {
     setError(err);
   } finally {
@@ -248,6 +249,11 @@ onMounted(async () => {
     window.history.replaceState({}, '', window.location.pathname);
     setFeedback('Reset link loaded. Enter a new password.');
     return;
+  }
+
+  if (route.query.reason === 'login_required') {
+    activeTab.value = 'login';
+    error.value = '請先登入後再進入大廳或遊戲房間。';
   }
 
   try {

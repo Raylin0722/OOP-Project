@@ -31,10 +31,16 @@ services:
       - .env
     volumes:
       - ./backend:/app
+      - ../OOP-AI:/oop-ai
     ports:
       - "8000:8000"
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - CHANNEL_LAYER_BACKEND=inmemory
+      - AI_PROJECT_ROOT=/oop-ai
+      - AI_CHECKPOINT_PATH=/oop-ai/experiments/200k-rand-v1/checkpoint_dqn.pt
+      - AI_DEVICE=cpu
+      - PYTHONPATH=/oop-ai/vendor/rlcard
     depends_on:
       - redis
     # 這裡先預留啟動指令，等你的 manage.py 準備好後取消註解即可
@@ -47,8 +53,13 @@ services:
       - .env
     volumes:
       - ./backend:/app
+      - ../OOP-AI:/oop-ai
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - AI_PROJECT_ROOT=/oop-ai
+      - AI_CHECKPOINT_PATH=/oop-ai/experiments/200k-rand-v1/checkpoint_dqn.pt
+      - AI_DEVICE=cpu
+      - PYTHONPATH=/oop-ai/vendor/rlcard
     depends_on:
       - redis
       - backend
