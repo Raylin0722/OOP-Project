@@ -58,6 +58,15 @@ def _user_payload(user):
     }
 
 
+def _room_user_payload(user):
+    profile = getattr(user, 'player_profile', None)
+    return {
+        'id': user.id,
+        'username': user.username,
+        'nickname': profile.nickname if profile else user.username,
+    }
+
+
 def _require_login(request):
     if not request.user.is_authenticated:
         return _error('not authenticated.', status=401, code='not_authenticated')
@@ -156,16 +165,12 @@ def _room_payload(room, user=None):
     member_payloads = []
     for member in members:
         payload = (
-            _user_payload(member.user)
+            _room_user_payload(member.user)
             if member.user_id
             else {
                 'id': None,
                 'username': member.ai_name,
-                'email': '',
-                'email_verified': True,
                 'nickname': member.ai_name,
-                'total_score': 0,
-                'win_rate': 0.0,
             }
         )
         member_payloads.append({

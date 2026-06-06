@@ -1068,7 +1068,7 @@ async function leaveRoom() {
 
 async function handleExitRoom() {
   if (showGameOverModal.value) {
-    returnToLobbyAfterGame();
+    await leaveRoomAfterGame();
     return;
   }
 
@@ -1082,7 +1082,22 @@ async function handleExitRoom() {
   window.location.assign('/lobby?left=1');
 }
 
-function returnToLobbyAfterGame() {
+async function leaveRoomAfterGame() {
+  // 結算後按「回到大廳」代表放棄下一局，只移除自己。
+  // 其他玩家若按「再來一局」仍會留在原房間。
+  try {
+    await leaveRoom();
+  } catch (err) {
+    console.warn('Failed to leave room after game ended:', err);
+  }
+
+  closeGameSocket();
+  window.location.assign('/lobby');
+}
+
+function returnToRoomForNextRound() {
+  // 結算後按「再來一局」代表保留自己的 RoomMember。
+  // 回到 lobby 後 current-room API 會把玩家帶回原本房間。
   closeGameSocket();
   window.location.assign('/lobby');
 }
@@ -1742,7 +1757,10 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <button class="action-btn game-over-exit" type="button" @click="returnToLobbyAfterGame">回到大廳</button>
+        <div class="game-over-actions">
+          <button class="action-btn game-over-exit" type="button" @click="leaveRoomAfterGame">回到大廳</button>
+          <button class="action-btn game-over-next" type="button" @click="returnToRoomForNextRound">再來一局</button>
+        </div>
       </section>
     </div>
   </main>
@@ -2390,7 +2408,14 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.game-over-exit {
+.game-over-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.game-over-exit,
+.game-over-next {
   width: 100%;
 }
 
