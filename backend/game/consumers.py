@@ -123,15 +123,27 @@ class MatchmakingConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _status_payload(self):
-        ticket = MatchmakingTicket.objects.filter(
-            user=self.user,
-            status=MatchmakingTicket.Status.WAITING,
-        ).first()
+        ticket = (
+            MatchmakingTicket.objects
+            .select_related('source_room')
+            .filter(
+                user=self.user,
+                status=MatchmakingTicket.Status.WAITING,
+            )
+            .first()
+        )
+
         if ticket is not None:
-            return {
+            payload = {
                 'type': 'waiting',
                 'ticket': _ticket_payload(ticket),
             }
+
+            if ticket.source_room_id:
+                payload['room'] = _room_payload(ticket.source_room, self.user)
+
+            return payload
+
         return {
             'type': 'idle',
             'ticket': None,

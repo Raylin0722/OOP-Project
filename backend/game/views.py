@@ -193,6 +193,9 @@ def _room_payload(room, user=None):
         and all(member['is_ready'] for member in non_host_members)
         and room.status in [Room.Status.WAITING, Room.Status.FULL]
     )
+    is_matchmaking = room.source_matchmaking_tickets.filter(
+        status=MatchmakingTicket.Status.WAITING,
+    ).exists()
     return {
         'id': room.room_id,
         'code': room.code,
@@ -200,10 +203,11 @@ def _room_payload(room, user=None):
         'status': room.get_status_display(),
         'member_count': member_count,
         'max_members': 4,
-        'can_start': can_start,
+        'can_start': can_start and not is_matchmaking,
         'members': member_payloads,
         'game_status': _game_reconnect_status(room, user),
         'test_mode': room.code in TEST_MODE_ROOM_CODES,
+        'is_matchmaking': is_matchmaking,
     }
 
 
@@ -268,13 +272,17 @@ def _broadcast_matchmaking_update(user_id, payload):
 def _ticket_payload(ticket):
     if ticket is None:
         return None
+
     waited_for = int((timezone.now() - ticket.created_at).total_seconds())
+
     return {
         'status': ticket.get_status_display(),
         'score': ticket.score,
         'waited_for': waited_for,
+        'started_at': ticket.created_at.isoformat(),
         'timeout_seconds': MATCHMAKING_TIMEOUT_SECONDS,
         'score_window': _matchmaking_score_window(waited_for),
+        'source_room_code': ticket.source_room.code if ticket.source_room_id else None,
     }
 
 
@@ -318,6 +326,57 @@ def _create_match_room(tickets, ai_count=0):
     _broadcast_room_update(room)
     return room
 
+def _complete_existing_room_matchmaking(room, room_tickets, extra_tickets, ai_count=0):
+    room_users = [ticket.user for ticket in room_tickets]
+    extra_users = [ticket.user for ticket in extra_tickets]
+    all_users = room_users + extra_users
+
+    for user in extra_users:
+        RoomMember.objects.get_or_create(
+            room=room,
+            user=user,
+            defaults={
+                'is_ai': False,
+                'is_ready': True,
+            },
+        )
+
+    RoomMember.objects.filter(
+        room=room,
+        user__in=all_users,
+    ).update(is_ready=True)
+
+    for index in range(ai_count):
+        RoomMember.objects.create(
+            room=room,
+            user=None,
+            is_ai=True,
+            ai_name=f'AI Player {index + 1}',
+            is_ready=True,
+        )
+
+    room.status = Room.Status.PLAYING
+    room.save(update_fields=['status'])
+
+    ticket_ids = [ticket.id for ticket in room_tickets + extra_tickets]
+    MatchmakingTicket.objects.filter(id__in=ticket_ids).update(
+        status=MatchmakingTicket.Status.MATCHED,
+        matched_room=room,
+    )
+
+    RoomMember.objects.filter(
+        user__in=extra_users,
+        room__status__in=[Room.Status.WAITING, Room.Status.FULL],
+    ).exclude(room=room).delete()
+
+    for user in all_users:
+        _broadcast_matchmaking_update(user.id, {
+            'type': 'matched',
+            'room': _room_payload(room, user),
+        })
+
+    _broadcast_room_update(room)
+    return room
 
 def _fill_room_with_ai(room, target_count=4):
     current_count = room.members.count()
@@ -349,22 +408,148 @@ def _matchmaking_score_window(waited_seconds):
             window = score_window
     return window
 
+def _try_complete_room_matchmaking(room):
+    room_tickets = list(
+        MatchmakingTicket.objects
+        .select_for_update()
+        .select_related('user', 'user__player_profile', 'source_room')
+        .filter(
+            status=MatchmakingTicket.Status.WAITING,
+            source_room=room,
+        )
+        .order_by('created_at', 'id')
+    )
+
+    if not room_tickets:
+        return None
+
+    current_human_count = len(room_tickets)
+    current_member_count = room.members.count()
+    needed = max(0, 4 - current_member_count)
+
+    if needed <= 0:
+        return _complete_existing_room_matchmaking(
+            room,
+            room_tickets,
+            extra_tickets=[],
+            ai_count=0,
+        )
+
+    now = timezone.now()
+    oldest_ticket = room_tickets[0]
+    waited_for = int((now - oldest_ticket.created_at).total_seconds())
+    score_window = _matchmaking_score_window(waited_for)
+
+    average_score = sum(ticket.score for ticket in room_tickets) / len(room_tickets)
+
+    solo_tickets = list(
+        MatchmakingTicket.objects
+        .select_for_update()
+        .select_related('user', 'user__player_profile')
+        .filter(
+            status=MatchmakingTicket.Status.WAITING,
+            source_room__isnull=True,
+        )
+        .exclude(user_id__in=[ticket.user_id for ticket in room_tickets])
+        .order_by('created_at', 'id')
+    )
+
+    close_solo_tickets = sorted(
+        [
+            ticket for ticket in solo_tickets
+            if abs(ticket.score - average_score) <= score_window
+        ],
+        key=lambda ticket: (abs(ticket.score - average_score), ticket.created_at, ticket.id),
+    )
+
+    if len(close_solo_tickets) >= needed:
+        return _complete_existing_room_matchmaking(
+            room,
+            room_tickets,
+            extra_tickets=close_solo_tickets[:needed],
+            ai_count=0,
+        )
+
+    if now - oldest_ticket.created_at >= timedelta(seconds=MATCHMAKING_TIMEOUT_SECONDS):
+        fallback_tickets = sorted(
+            solo_tickets,
+            key=lambda ticket: (abs(ticket.score - average_score), ticket.created_at, ticket.id),
+        )[:needed]
+
+        return _complete_existing_room_matchmaking(
+            room,
+            room_tickets,
+            extra_tickets=fallback_tickets,
+            ai_count=needed - len(fallback_tickets),
+        )
+
+    return None
 
 def _try_complete_matchmaking(anchor_user=None):
     with transaction.atomic():
+        anchor_ticket = None
+
+        if anchor_user is not None:
+            anchor_ticket = (
+                MatchmakingTicket.objects
+                .select_for_update()
+                .select_related('user', 'user__player_profile', 'source_room')
+                .filter(
+                    user=anchor_user,
+                    status=MatchmakingTicket.Status.WAITING,
+                )
+                .first()
+            )
+
+        if anchor_ticket is not None and anchor_ticket.source_room_id:
+            room = (
+                Room.objects
+                .select_for_update()
+                .filter(pk=anchor_ticket.source_room_id)
+                .first()
+            )
+            if room is None:
+                return None
+
+            return _try_complete_room_matchmaking(room)
+
+        room_ticket = (
+            MatchmakingTicket.objects
+            .select_for_update()
+            .select_related('source_room')
+            .filter(
+                status=MatchmakingTicket.Status.WAITING,
+                source_room__isnull=False,
+            )
+            .order_by('created_at', 'id')
+            .first()
+        )
+
+        if room_ticket is not None:
+            room = Room.objects.select_for_update().filter(pk=room_ticket.source_room_id).first()
+            if room is not None:
+                room_result = _try_complete_room_matchmaking(room)
+                if room_result is not None:
+                    return room_result
+
         tickets = list(
             MatchmakingTicket.objects
             .select_for_update()
             .select_related('user', 'user__player_profile')
-            .filter(status=MatchmakingTicket.Status.WAITING)
+            .filter(
+                status=MatchmakingTicket.Status.WAITING,
+                source_room__isnull=True,
+            )
             .order_by('created_at', 'id')
         )
+
         if not tickets:
             return None
 
         anchor_ticket = None
         if anchor_user is not None:
             anchor_ticket = next((ticket for ticket in tickets if ticket.user_id == anchor_user.id), None)
+
         anchor_ticket = anchor_ticket or tickets[0]
         now = timezone.now()
         anchor_waited_for = int((now - anchor_ticket.created_at).total_seconds())
@@ -377,17 +562,23 @@ def _try_complete_matchmaking(anchor_user=None):
             ],
             key=lambda ticket: (abs(ticket.score - anchor_ticket.score), ticket.created_at, ticket.id),
         )
+
         if len(close_tickets) >= 4:
             return _create_match_room(close_tickets[:4])
 
         oldest_ticket = tickets[0]
         waited_for = now - oldest_ticket.created_at
+
         if waited_for >= timedelta(seconds=MATCHMAKING_TIMEOUT_SECONDS):
             fallback_tickets = sorted(
                 tickets,
                 key=lambda ticket: (abs(ticket.score - oldest_ticket.score), ticket.created_at, ticket.id),
             )[:4]
-            return _create_match_room(fallback_tickets, ai_count=4 - len(fallback_tickets))
+
+            return _create_match_room(
+                fallback_tickets,
+                ai_count=4 - len(fallback_tickets),
+            )
 
     return None
 
@@ -404,6 +595,7 @@ def _start_room_matchmaking(room, anchor_user):
         return None, None
 
     with transaction.atomic():
+        room = Room.objects.select_for_update().get(pk=room.pk)
         MatchmakingTicket.objects.filter(user__in=users).delete()
         tickets = []
         for user in users:
@@ -412,25 +604,29 @@ def _start_room_matchmaking(room, anchor_user):
                 user=user,
                 score=profile.total_score if profile else 0,
                 status=MatchmakingTicket.Status.WAITING,
+                source_room=room,
             ))
+        RoomMember.objects.filter(
+            room=room,
+            user__in=users,
+        ).update(is_ready=True)
 
-        code = room.code
-        room.delete()
 
-    _broadcast_room_deleted(code)
+    _broadcast_room_update(room)
 
     for ticket in tickets:
         _broadcast_matchmaking_update(ticket.user_id, {
             'type': 'waiting',
             'ticket': _ticket_payload(ticket),
+            'room': _room_payload(room, ticket.user),
         })
 
     # Matching is performed by the standalone management command:
     # python manage.py matchmaking_worker
     # Keep this view read/write only for ticket creation to avoid racing SQLite writes.
-    matched_room = None
+
     user_ticket = next((ticket for ticket in tickets if ticket.user_id == anchor_user.id), None)
-    return matched_room, user_ticket or (tickets[0] if tickets else None)
+    return room, user_ticket or (tickets[0] if tickets else None)
 
 
 def _create_verification_code(user):
@@ -915,17 +1111,12 @@ def start_room(request, code):
         return _error('all players must be ready before starting.', code='players_not_ready')
 
     if len(members) < 4 and not test_mode:
-        matched_room, ticket = _start_room_matchmaking(room, request.user)
-        if matched_room is not None:
-            return JsonResponse({
-                'room': _room_payload(matched_room, request.user),
-                'ticket': None,
-                'message': 'Matched and game started.',
-            })
+        matchmaking_room, ticket = _start_room_matchmaking(room, request.user)
+
         return JsonResponse({
-            'room': None,
+            'room': _room_payload(matchmaking_room, request.user),
             'ticket': _ticket_payload(ticket),
-            'message': 'Matchmaking started.',
+            'message': 'Room matchmaking started.',
         })
 
     if len(members) != 4 and not test_mode:
@@ -1036,11 +1227,26 @@ def matchmaking_status(request):
     if membership is not None and membership.room.status == Room.Status.PLAYING:
         return JsonResponse({'room': _room_payload(membership.room, request.user), 'ticket': None})
 
-    ticket = MatchmakingTicket.objects.filter(
-        user=request.user,
-        status=MatchmakingTicket.Status.WAITING,
-    ).first()
-    return JsonResponse({'room': None, 'ticket': _ticket_payload(ticket)})
+    ticket = (
+        MatchmakingTicket.objects
+        .select_related('source_room')
+        .filter(
+            user=request.user,
+            status=MatchmakingTicket.Status.WAITING,
+        )
+        .first()
+    )
+
+    if ticket and ticket.source_room_id:
+        return JsonResponse({
+            'room': _room_payload(ticket.source_room, request.user),
+            'ticket': _ticket_payload(ticket),
+        })
+
+    return JsonResponse({
+        'room': None,
+        'ticket': _ticket_payload(ticket),
+    })
 
 
 # ============================================================================

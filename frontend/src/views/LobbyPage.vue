@@ -58,9 +58,15 @@ const matchmakingStatusText = computed(() => {
   return `配對中：已等待 ${waitedFor}/${timeout} 秒，分數範圍 ±${scoreWindow}`;
 });
 
-const roomStartLabel = computed(() => (
-  (currentRoom.value?.member_count ?? 0) >= 4 ? '開始遊戲' : '開始配對'
-));
+const roomStartLabel = computed(() => {
+  if (currentRoom.value?.is_matchmaking) {
+    return '配對中';
+  }
+
+  return (currentRoom.value?.member_count ?? 0) >= 4
+    ? '開始遊戲'
+    : '開始配對';
+});
 
 function handleUnauthorized() {
   currentUser.value = null;
@@ -131,40 +137,47 @@ function closeMatchmakingSocket() {
 }
 
 function setMatchmakingTicket(ticket) {
-  matchmakingTicket.value = ticket ? {
-    ...ticket,
-    local_started_at: ticket.local_started_at || Date.now(),
-  } : null;
-
-  if (matchmakingTicket.value) {
-    startMatchmakingTimer();
-    startMatchmakingStatusPolling();
-  } else {
+  if (!ticket) {
+    matchmakingTicket.value = null;
     stopMatchmakingTimer();
     stopMatchmakingStatusPolling();
+    return;
   }
+
+  matchmakingTicket.value = {
+    ...ticket,
+  };
+
+  startMatchmakingTimer();
+  startMatchmakingStatusPolling();
 }
 
 function getMatchmakingWaitedSeconds() {
   matchmakingTick.value;
+
   const ticket = matchmakingTicket.value;
   if (!ticket) {
     return 0;
   }
 
-  const serverWaitedFor = Number(ticket.waited_for ?? 0);
-  const localStartedAt = Number(ticket.local_started_at || Date.now());
-  const localElapsed = Math.floor((Date.now() - localStartedAt) / 1000);
-  return Math.max(0, serverWaitedFor + localElapsed);
-}
+  if (ticket.started_at) {
+    const startedAt = new Date(ticket.started_at).getTime();
 
+    if (!Number.isNaN(startedAt)) {
+      return Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    }
+  }
+
+  return Math.max(0, Number(ticket.waited_for ?? 0));
+}
 function startMatchmakingTimer() {
   if (matchmakingTimerId) {
     return;
   }
 
   matchmakingTimerId = window.setInterval(() => {
-    matchmakingTick.value += 1;
+    matchmakingTick.value = Date.now();
+    console.log('[matchmaking timer]', matchmakingTick.value);
   }, 1000);
 }
 
@@ -239,17 +252,28 @@ function handleMatchmakingMessage(rawData) {
     return;
   }
 
-  if (data.room) {
-    setMatchmakingTicket(null);
-    setRoom(data.room);
-    handlePlayingRoomNavigation(data.room, Boolean(data.room.test_mode), {
-      forceEnter: data.room.status === 'Playing',
-    });
+  if (data.type === 'waiting' || data.ticket) {
+    if (data.ticket) {
+      setMatchmakingTicket(data.ticket);
+    }
+
+    if (data.room) {
+      setRoom(data.room);
+    }
+
     return;
   }
 
-  if (data.type === 'waiting' || data.ticket) {
-    setMatchmakingTicket(data.ticket);
+  if (data.room) {
+    setRoom(data.room);
+
+    if (data.room.status === 'Playing') {
+      setMatchmakingTicket(null);
+      handlePlayingRoomNavigation(data.room, Boolean(data.room.test_mode), {
+        forceEnter: true,
+      });
+    }
+
     return;
   }
 
@@ -540,7 +564,13 @@ async function startGame() {
     });
     if (data.ticket) {
       setMatchmakingTicket(data.ticket);
-      setRoom(null);
+
+      if (data.room) {
+        setRoom(data.room);
+      } else {
+        setRoom(null);
+      }
+
       connectMatchmakingSocket();
       return;
     }

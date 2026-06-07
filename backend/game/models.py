@@ -98,6 +98,13 @@ class MatchmakingTicket(models.Model):
         null=True,
         blank=True,
     )
+    source_room = models.ForeignKey(
+        Room,
+        on_delete=models.CASCADE,
+        related_name='source_matchmaking_tickets',
+        null=True,
+        blank=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -105,6 +112,7 @@ class MatchmakingTicket(models.Model):
         db_table = 'matchmaking_ticket'
         indexes = [
             models.Index(fields=['status', 'score', 'created_at']),
+            models.Index(fields=['status', 'source_room', 'created_at']),
         ]
 
     def __str__(self):
