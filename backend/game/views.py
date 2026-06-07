@@ -204,6 +204,7 @@ def _room_payload(room, user=None):
         'member_count': member_count,
         'max_members': 4,
         'can_start': can_start and not is_matchmaking,
+        'is_public': room.is_public,
         'members': member_payloads,
         'game_status': _game_reconnect_status(room, user),
         'test_mode': room.code in TEST_MODE_ROOM_CODES,
@@ -895,6 +896,9 @@ def create_room(request):
     if blocked_error:
         return blocked_error
 
+    data = _json_body(request) or {}
+    is_public = bool(data.get('is_public', False))
+
     with transaction.atomic():
         RoomMember.objects.filter(
             user=request.user,
@@ -904,11 +908,44 @@ def create_room(request):
             code=_room_code(),
             host=request.user,
             status=Room.Status.WAITING,
+            is_public=is_public,
         )
         RoomMember.objects.create(room=room, user=request.user, is_ready=False)
 
     _broadcast_room_update(room)
     return JsonResponse({'room': _room_payload(room, request.user)}, status=201)
+
+
+@require_http_methods(['GET'])
+def public_rooms(request):
+    login_error = _require_login(request)
+    if login_error:
+        return login_error
+
+    rooms = (
+        Room.objects
+        .select_related('host')
+        .prefetch_related('members__user__player_profile')
+        .filter(
+            is_public=True,
+            status=Room.Status.WAITING,
+        )
+        .order_by('-created_at')
+    )
+
+    room_payloads = []
+    for room in rooms:
+        member_count = room.members.count()
+        is_matchmaking = room.source_matchmaking_tickets.filter(
+            status=MatchmakingTicket.Status.WAITING,
+        ).exists()
+
+        if member_count >= 4 or is_matchmaking:
+            continue
+
+        room_payloads.append(_room_payload(room, request.user))
+
+    return JsonResponse({'rooms': room_payloads})
 
 
 @csrf_exempt
@@ -934,6 +971,8 @@ def join_room(request):
         return room_error
     if room.status == Room.Status.PLAYING:
         return _error('room is already playing.', code='room_playing')
+    if room.source_matchmaking_tickets.filter(status=MatchmakingTicket.Status.WAITING).exists():
+        return _error('room is matchmaking.', code='room_matchmaking')
 
     with transaction.atomic():
         room = Room.objects.select_for_update().get(pk=room.pk)

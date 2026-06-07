@@ -15,6 +15,7 @@ urlpatterns = [
 
     # 房間相關
     path('rooms/create/', views.create_room, name='create_room'),
+    path('rooms/public/', views.public_rooms, name='public_rooms'),
     path('rooms/join/', views.join_room, name='join_room'),
     path('rooms/current/', views.current_room, name='current_room'),
     path('rooms/<str:code>/ready/', views.set_room_ready, name='set_room_ready'),

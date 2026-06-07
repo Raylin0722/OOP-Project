@@ -15,6 +15,10 @@ const route = useRoute();
 const currentUser = ref(null);
 const currentRoom = ref(null);
 const joinCode = ref('');
+const createRoomIsPublic = ref(false);
+const publicRooms = ref([]);
+const publicRoomsLoading = ref(false);
+const publicRoomsError = ref('');
 const loading = ref(false);
 const roomBusy = ref(false);
 const errorMessage = ref('');
@@ -24,6 +28,7 @@ const matchmakingTick = ref(0);
 let roomSocket = null;
 let matchmakingSocket = null;
 let lobbyPollId = null;
+let publicRoomsPollId = null;
 let matchmakingTimerId = null;
 let matchmakingStatusPollId = null;
 let matchmakingReconnectTimerId = null;
@@ -73,6 +78,7 @@ function handleUnauthorized() {
   currentRoom.value = null;
   localStorage.removeItem('authToken');
   stopLobbyPolling();
+  stopPublicRoomsPolling();
   stopMatchmakingTimer();
   stopMatchmakingStatusPolling();
   closeRoomSocket();
@@ -246,6 +252,7 @@ function handleMatchmakingMessage(rawData) {
   if (data.type === 'matched' && data.room) {
     setMatchmakingTicket(null);
     setRoom(data.room);
+    loadPublicRooms();
     handlePlayingRoomNavigation(data.room, Boolean(data.room.test_mode), {
       forceEnter: true,
     });
@@ -449,9 +456,50 @@ function stopLobbyPolling() {
   }
 }
 
+async function loadPublicRooms() {
+  publicRoomsLoading.value = true;
+  publicRoomsError.value = '';
+
+  try {
+    const data = await request('/rooms/public/');
+    publicRooms.value = data.rooms || [];
+  } catch (err) {
+    publicRoomsError.value = err.message || '無法取得公開房間列表。';
+  } finally {
+    publicRoomsLoading.value = false;
+  }
+}
+
+function startPublicRoomsPolling() {
+  if (publicRoomsPollId) {
+    return;
+  }
+
+  publicRoomsPollId = window.setInterval(() => {
+    loadPublicRooms();
+  }, 5000);
+}
+
+function stopPublicRoomsPolling() {
+  if (publicRoomsPollId) {
+    window.clearInterval(publicRoomsPollId);
+    publicRoomsPollId = null;
+  }
+}
+
+async function joinPublicRoom(room) {
+  if (!room?.code) {
+    return;
+  }
+
+  joinCode.value = room.code;
+  await joinRoom();
+}
+
 async function submitLogout() {
   loading.value = true;
   stopLobbyPolling();
+  stopPublicRoomsPolling();
   closeRoomSocket();
   closeMatchmakingSocket();
   setMatchmakingTicket(null);
@@ -476,10 +524,13 @@ async function createRoom() {
   try {
     const data = await request('/rooms/create/', {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify({
+        is_public: createRoomIsPublic.value,
+      }),
     });
     setMatchmakingTicket(null);
     setRoom(data.room);
+    await loadPublicRooms();
   } catch (err) {
     errorMessage.value = err.message;
   } finally {
@@ -503,6 +554,7 @@ async function joinRoom() {
     });
     setMatchmakingTicket(null);
     setRoom(data.room);
+    await loadPublicRooms();
   } catch (err) {
     errorMessage.value = err.message;
   } finally {
@@ -543,6 +595,7 @@ async function leaveRoom() {
       body: JSON.stringify({}),
     });
     setRoom(null);
+    await loadPublicRooms();
   } catch (err) {
     errorMessage.value = err.message;
   } finally {
@@ -624,7 +677,7 @@ async function joinMatchmaking() {
       body: JSON.stringify({}),
     });
     handleMatchmakingMessage({
-      type: data.room ? 'matched' : 'waiting',
+      type: data.ticket ? 'waiting' : (data.room ? 'matched' : 'idle'),
       ...data,
     });
   } catch (err) {
@@ -653,7 +706,7 @@ async function cancelMatchmaking() {
 async function loadMatchmakingStatus() {
   const data = await request('/matchmaking/status/');
   handleMatchmakingMessage({
-    type: data.room ? 'matched' : (data.ticket ? 'waiting' : 'idle'),
+    type: data.ticket ? 'waiting' : (data.room ? 'matched' : 'idle'),
     ...data,
   });
 }
@@ -677,7 +730,9 @@ onMounted(async () => {
     connectMatchmakingSocket();
     await loadCurrentRoom();
     await loadMatchmakingStatus();
+    await loadPublicRooms();
     startLobbyPolling();
+    startPublicRoomsPolling();
   } catch (err) {
     console.error('Failed to load lobby:', err);
     router.push('/auth');
@@ -686,6 +741,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopLobbyPolling();
+  stopPublicRoomsPolling();
   stopMatchmakingTimer();
   stopMatchmakingStatusPolling();
   closeRoomSocket();
@@ -774,6 +830,14 @@ onBeforeUnmount(() => {
             />
           </label>
 
+          <label class="room-public-option">
+            <input
+              v-model="createRoomIsPublic"
+              type="checkbox"
+            />
+            <span>建立為公開房間</span>
+          </label>
+
           <LobbyActionButtons
             :busy="roomBusy"
             :is-matchmaking="isMatchmaking"
@@ -782,6 +846,49 @@ onBeforeUnmount(() => {
             @join-matchmaking="joinMatchmaking"
             @cancel-matchmaking="cancelMatchmaking"
           />
+
+          <section class="public-room-section">
+            <div class="public-room-header">
+              <h3>公開房間</h3>
+              <button
+                type="button"
+                class="refresh-public-room-btn"
+                :disabled="publicRoomsLoading"
+                @click="loadPublicRooms"
+              >
+                重新整理
+              </button>
+            </div>
+
+            <p v-if="publicRoomsError" class="public-room-error">
+              {{ publicRoomsError }}
+            </p>
+
+            <p v-else-if="!publicRoomsLoading && publicRooms.length === 0" class="public-room-empty">
+              目前沒有可加入的公開房間
+            </p>
+
+            <div
+              v-for="room in publicRooms"
+              :key="room.code"
+              class="public-room-card"
+            >
+              <div>
+                <strong>房間 {{ room.code }}</strong>
+                <div>人數：{{ room.member_count }}/{{ room.max_members }}</div>
+                <div>狀態：{{ room.status }}</div>
+              </div>
+
+              <button
+                type="button"
+                class="join-public-room-btn"
+                :disabled="roomBusy || room.member_count >= room.max_members || room.is_matchmaking"
+                @click="joinPublicRoom(room)"
+              >
+                加入
+              </button>
+            </div>
+          </section>
         </div>
       </section>
     </div>
@@ -976,6 +1083,90 @@ onBeforeUnmount(() => {
   border: 1px solid #cbd5e1;
   border-radius: 8px;
   font-size: 16px;
+}
+
+.room-public-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.room-public-option input {
+  width: 16px;
+  height: 16px;
+}
+
+.public-room-section {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+  padding-top: 18px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.public-room-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.public-room-header h3 {
+  margin: 0;
+  color: #111827;
+  font-size: 18px;
+}
+
+.refresh-public-room-btn,
+.join-public-room-btn {
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid #1d4ed8;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.refresh-public-room-btn:disabled,
+.join-public-room-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.public-room-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.public-room-card strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.public-room-empty {
+  margin: 0;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.public-room-error {
+  margin: 0;
+  color: #991b1b;
+  font-size: 14px;
+  font-weight: 700;
 }
 
 @media (max-width: 760px) {

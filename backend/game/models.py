@@ -36,6 +36,7 @@ class Room(models.Model):
         related_name='hosted_rooms',
     )
     status = models.IntegerField(choices=Status.choices, default=Status.WAITING)
+    is_public = models.BooleanField(default=False)
     room_password = models.CharField(max_length=128, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
