@@ -28,5 +28,6 @@ jobs:
             docker compose up -d
 
             docker compose exec -T backend python manage.py migrate
+            docker compose exec -T backend python manage.py clear_runtime_state
             docker compose restart backend matchmaking_worker
             docker compose ps
