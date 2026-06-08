@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title>Lobby refresh placeholder</title>
+  <circle cx="64" cy="64" r="52" fill="#f3e7c8" stroke="#6c4a24" stroke-width="8"/>
+  <path
+    d="M90 42c-7-8-16-12-28-12-19 0-34 15-34 34s15 34 34 34c14 0 26-8 31-20"
+    fill="none"
+    stroke="#6c4a24"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="10"
+  />
+  <path
+    d="M86 26v20H66"
+    fill="none"
+    stroke="#6c4a24"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="10"
+  />
+</svg>

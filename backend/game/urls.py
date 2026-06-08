@@ -19,6 +19,7 @@ urlpatterns = [
     path('rooms/join/', views.join_room, name='join_room'),
     path('rooms/current/', views.current_room, name='current_room'),
     path('rooms/<str:code>/ready/', views.set_room_ready, name='set_room_ready'),
+    path('rooms/<str:code>/visibility/', views.set_room_visibility, name='set_room_visibility'),
     path('rooms/<str:code>/leave/', views.leave_room, name='leave_room'),
     path('rooms/<str:code>/kick/', views.kick_room_member, name='kick_room_member'),
     path('rooms/<str:code>/transfer-host/', views.transfer_room_host, name='transfer_room_host'),

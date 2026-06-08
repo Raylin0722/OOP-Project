@@ -85,6 +85,14 @@ STATIC_URL = 'static/'
 STATIC_ROOT = os.environ.get('DJANGO_STATIC_ROOT', BASE_DIR / 'staticfiles')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+
+# Auto-expire authenticated sessions after 30 minutes of inactivity.
+# SESSION_SAVE_EVERY_REQUEST refreshes the expiry only when the user actually
+# sends a request, so the timeout behaves like an inactivity timer.
+SESSION_COOKIE_AGE = int(os.environ.get('DJANGO_SESSION_COOKIE_AGE', '1800'))
+SESSION_SAVE_EVERY_REQUEST = _env_bool('DJANGO_SESSION_SAVE_EVERY_REQUEST', True)
+SESSION_EXPIRE_AT_BROWSER_CLOSE = _env_bool('DJANGO_SESSION_EXPIRE_AT_BROWSER_CLOSE', False)
+
 SESSION_COOKIE_SECURE = _env_bool('DJANGO_SESSION_COOKIE_SECURE', False)
 CSRF_COOKIE_SECURE = _env_bool('DJANGO_CSRF_COOKIE_SECURE', False)
 SECURE_SSL_REDIRECT = _env_bool('DJANGO_SECURE_SSL_REDIRECT', False)

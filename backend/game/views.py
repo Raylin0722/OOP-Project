@@ -28,6 +28,7 @@ MATCHMAKING_SCORE_WINDOWS = (
     (20, 300),
 )
 TEST_MODE_ROOM_CODES = set()
+ROOM_VISIBILITY_TOGGLE_COOLDOWN_SECONDS = 10
 
 
 def _json_body(request):
@@ -205,12 +206,93 @@ def _room_payload(room, user=None):
         'max_members': 4,
         'can_start': can_start and not is_matchmaking,
         'is_public': room.is_public,
+        'last_visibility_changed_at': (
+            room.last_visibility_changed_at.isoformat()
+            if room.last_visibility_changed_at
+            else None
+        ),
+        'visibility_toggle_cooldown_seconds': ROOM_VISIBILITY_TOGGLE_COOLDOWN_SECONDS,
         'members': member_payloads,
         'game_status': _game_reconnect_status(room, user),
         'test_mode': room.code in TEST_MODE_ROOM_CODES,
         'is_matchmaking': is_matchmaking,
     }
 
+
+
+def _cleanup_user_presence(user):
+    """Remove a user from matchmaking and all active room memberships before logout.
+
+    This keeps lobby rooms from retaining ghost members after manual logout or
+    the frontend idle-timeout logout. Playing rooms are also cleaned at the DB
+    level; the existing game socket leave flow still handles AI replacement when
+    the socket is open.
+    """
+    if user is None or not getattr(user, 'is_authenticated', False):
+        return []
+
+    affected_room_codes = []
+
+    MatchmakingTicket.objects.filter(
+        user=user,
+        status=MatchmakingTicket.Status.WAITING,
+    ).update(status=MatchmakingTicket.Status.CANCELLED)
+
+    memberships = list(
+        RoomMember.objects
+        .select_related('room')
+        .filter(
+            user=user,
+            room__status__in=[Room.Status.WAITING, Room.Status.FULL, Room.Status.PLAYING],
+        )
+        .order_by('room_id')
+    )
+
+    for membership in memberships:
+        room = membership.room
+        room_code = room.code
+        affected_room_codes.append(room_code)
+
+        with transaction.atomic():
+            room = Room.objects.select_for_update().filter(pk=room.pk).first()
+            if room is None:
+                continue
+
+            RoomMember.objects.filter(pk=membership.pk).delete()
+            human_members = list(
+                RoomMember.objects
+                .select_related('user')
+                .filter(room=room, user__isnull=False, is_ai=False)
+                .order_by('joined_at', 'id')
+            )
+
+            if not human_members:
+                room.delete()
+                _broadcast_room_deleted(room_code)
+                continue
+
+            update_fields = []
+            if room.host_id == user.id:
+                room.host = human_members[0].user
+                update_fields.append('host')
+
+            if room.status != Room.Status.PLAYING:
+                next_status = Room.Status.FULL if len(human_members) >= 4 else Room.Status.WAITING
+                if room.status != next_status:
+                    room.status = next_status
+                    update_fields.append('status')
+
+            if update_fields:
+                room.save(update_fields=update_fields)
+
+        refreshed_room = Room.objects.filter(code=room_code).first()
+        if refreshed_room is not None:
+            _broadcast_room_update(refreshed_room)
+
+    if user.id:
+        _broadcast_matchmaking_update(user.id, {'type': 'cancelled', 'ticket': None})
+
+    return affected_room_codes
 
 def _get_room_or_error(code):
     room = (
@@ -875,8 +957,14 @@ def login_view(request):
 @csrf_exempt
 @require_http_methods(['POST'])
 def logout_view(request):
+    cleaned_rooms = []
+    if request.user.is_authenticated:
+        cleaned_rooms = _cleanup_user_presence(request.user)
     logout(request)
-    return JsonResponse({'message': 'Logged out.'})
+    return JsonResponse({
+        'message': 'Logged out.',
+        'cleaned_rooms': cleaned_rooms,
+    })
 
 
 @require_http_methods(['GET'])
@@ -896,9 +984,6 @@ def create_room(request):
     if blocked_error:
         return blocked_error
 
-    data = _json_body(request) or {}
-    is_public = bool(data.get('is_public', False))
-
     with transaction.atomic():
         RoomMember.objects.filter(
             user=request.user,
@@ -908,7 +993,6 @@ def create_room(request):
             code=_room_code(),
             host=request.user,
             status=Room.Status.WAITING,
-            is_public=is_public,
         )
         RoomMember.objects.create(room=room, user=request.user, is_ready=False)
 
@@ -946,6 +1030,57 @@ def public_rooms(request):
         room_payloads.append(_room_payload(room, request.user))
 
     return JsonResponse({'rooms': room_payloads})
+
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def set_room_visibility(request, code):
+    login_error = _require_login(request)
+    if login_error:
+        return login_error
+
+    data = _json_body(request)
+    if data is None:
+        return _error('Invalid JSON body.')
+
+    room, room_error = _get_room_or_error(code)
+    if room_error:
+        return room_error
+
+    now = timezone.now()
+
+    with transaction.atomic():
+        room = Room.objects.select_for_update().get(pk=room.pk)
+
+        if room.host_id != request.user.id:
+            return _error('only host can change room visibility.', status=403, code='not_room_host')
+
+        if room.status == Room.Status.PLAYING:
+            return _error('cannot change visibility while playing.', status=400, code='room_playing')
+
+        if room.last_visibility_changed_at:
+            elapsed = (now - room.last_visibility_changed_at).total_seconds()
+            if elapsed < ROOM_VISIBILITY_TOGGLE_COOLDOWN_SECONDS:
+                wait_seconds = max(1, int(ROOM_VISIBILITY_TOGGLE_COOLDOWN_SECONDS - elapsed))
+                return JsonResponse({
+                    'error': {
+                        'code': 'visibility_toggle_cooldown',
+                        'message': f'please wait {wait_seconds} seconds before changing visibility again.',
+                    },
+                    'wait_seconds': wait_seconds,
+                    'room': _room_payload(room, request.user),
+                }, status=429)
+
+        next_is_public = bool(data.get('is_public', not room.is_public))
+        room.is_public = next_is_public
+        room.last_visibility_changed_at = now
+        room.save(update_fields=['is_public', 'last_visibility_changed_at'])
+
+    _broadcast_room_update(room)
+    return JsonResponse({
+        'room': _room_payload(room, request.user),
+        'visibility_toggle_cooldown_seconds': ROOM_VISIBILITY_TOGGLE_COOLDOWN_SECONDS,
+    })
 
 
 @csrf_exempt

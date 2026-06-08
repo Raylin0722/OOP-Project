@@ -37,6 +37,7 @@ class Room(models.Model):
     )
     status = models.IntegerField(choices=Status.choices, default=Status.WAITING)
     is_public = models.BooleanField(default=False)
+    last_visibility_changed_at = models.DateTimeField(null=True, blank=True)
     room_password = models.CharField(max_length=128, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

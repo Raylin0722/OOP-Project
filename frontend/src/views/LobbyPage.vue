@@ -1,10 +1,10 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import PlayerInfoCard from '../components/PlayerInfoCard.vue';
 import PlayerStatsPanel from '../components/PlayerStatsPanel.vue';
 import LobbyActionButtons from '../components/LobbyActionButtons.vue';
-import hallImage from '../assets/pictures/hall.png';
+import hallImage from '../assets/pictures/hall.jpg';
+import refreshPlaceholderIcon from '../assets/pictures/lobby-refresh-placeholder.svg';
 
 const API_BASE = '/api';
 const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -15,7 +15,9 @@ const route = useRoute();
 const currentUser = ref(null);
 const currentRoom = ref(null);
 const joinCode = ref('');
-const createRoomIsPublic = ref(false);
+const showJoinRoomModal = ref(false);
+const roomVisibilityLocalCooldownUntil = ref(0);
+const uiTick = ref(Date.now());
 const publicRooms = ref([]);
 const publicRoomsLoading = ref(false);
 const publicRoomsError = ref('');
@@ -23,15 +25,19 @@ const loading = ref(false);
 const roomBusy = ref(false);
 const errorMessage = ref('');
 const showStatsPanel = ref(false);
+const showVisibilityCooldownNotice = ref(false);
 const matchmakingTicket = ref(null);
 const matchmakingTick = ref(0);
 let roomSocket = null;
 let matchmakingSocket = null;
 let lobbyPollId = null;
 let publicRoomsPollId = null;
+let uiTickId = null;
 let matchmakingTimerId = null;
 let matchmakingStatusPollId = null;
 let matchmakingReconnectTimerId = null;
+let visibilityCooldownNoticeTimerId = null;
+let suppressBeforeUnloadWarning = false;
 
 const currentMember = computed(() => {
   if (!currentUser.value || !currentRoom.value) {
@@ -73,12 +79,78 @@ const roomStartLabel = computed(() => {
     : '開始配對';
 });
 
+const isCurrentUserHost = computed(() => Boolean(currentMember.value?.is_host));
+const canManageRoomMembers = computed(() => (
+  Boolean(currentRoom.value)
+  && isCurrentUserHost.value
+  && currentRoom.value.status !== 'Playing'
+));
+
+const visiblePublicRooms = computed(() => publicRooms.value.slice(0, 6));
+
+const roomVisibilityCooldownRemaining = computed(() => {
+  uiTick.value;
+
+  if (!currentRoom.value) {
+    return 0;
+  }
+
+  const cooldownSeconds = Number(currentRoom.value.visibility_toggle_cooldown_seconds ?? 10);
+  const cooldownMs = cooldownSeconds * 1000;
+  const changedAt = currentRoom.value.last_visibility_changed_at
+    ? new Date(currentRoom.value.last_visibility_changed_at).getTime()
+    : 0;
+  const backendCooldownUntil = Number.isNaN(changedAt) ? 0 : changedAt + cooldownMs;
+  const cooldownUntil = Math.max(backendCooldownUntil, roomVisibilityLocalCooldownUntil.value);
+
+  return Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000));
+});
+
+const canToggleRoomVisibility = computed(() => (
+  Boolean(currentRoom.value)
+  && isCurrentUserHost.value
+  && currentRoom.value.status !== 'Playing'
+  && !roomBusy.value
+  && roomVisibilityCooldownRemaining.value === 0
+));
+
+const roomVisibilityButtonText = computed(() => {
+  if (!currentRoom.value) {
+    return '切換公開';
+  }
+
+  const remaining = roomVisibilityCooldownRemaining.value;
+  if (remaining > 0) {
+    return `${remaining} 秒後可切換`;
+  }
+
+  return currentRoom.value.is_public ? '設為私密' : '設為公開';
+});
+
+function showVisibilityCooldownToast() {
+  showVisibilityCooldownNotice.value = false;
+
+  if (visibilityCooldownNoticeTimerId) {
+    window.clearTimeout(visibilityCooldownNoticeTimerId);
+    visibilityCooldownNoticeTimerId = null;
+  }
+
+  window.requestAnimationFrame(() => {
+    showVisibilityCooldownNotice.value = true;
+    visibilityCooldownNoticeTimerId = window.setTimeout(() => {
+      showVisibilityCooldownNotice.value = false;
+      visibilityCooldownNoticeTimerId = null;
+    }, 1800);
+  });
+}
+
 function handleUnauthorized() {
   currentUser.value = null;
   currentRoom.value = null;
   localStorage.removeItem('authToken');
   stopLobbyPolling();
   stopPublicRoomsPolling();
+  stopUiTicker();
   stopMatchmakingTimer();
   stopMatchmakingStatusPolling();
   closeRoomSocket();
@@ -487,6 +559,46 @@ function stopPublicRoomsPolling() {
   }
 }
 
+function startUiTicker() {
+  if (uiTickId) {
+    return;
+  }
+
+  uiTickId = window.setInterval(() => {
+    uiTick.value = Date.now();
+  }, 1000);
+}
+
+function stopUiTicker() {
+  if (uiTickId) {
+    window.clearInterval(uiTickId);
+    uiTickId = null;
+  }
+}
+
+function openJoinRoomModal() {
+  joinCode.value = '';
+  showJoinRoomModal.value = true;
+}
+
+function closeJoinRoomModal() {
+  showJoinRoomModal.value = false;
+}
+
+function shouldWarnBeforeLeavingLobby() {
+  return !suppressBeforeUnloadWarning && Boolean(currentRoom.value || matchmakingTicket.value);
+}
+
+function handleLobbyBeforeUnload(event) {
+  if (!shouldWarnBeforeLeavingLobby()) {
+    return;
+  }
+
+  event.preventDefault();
+  event.returnValue = '你目前仍在房間或配對中，直接關閉視窗可能會造成中離。';
+}
+
+
 async function joinPublicRoom(room) {
   if (!room?.code) {
     return;
@@ -498,6 +610,7 @@ async function joinPublicRoom(room) {
 
 async function submitLogout() {
   loading.value = true;
+  suppressBeforeUnloadWarning = true;
   stopLobbyPolling();
   stopPublicRoomsPolling();
   closeRoomSocket();
@@ -512,6 +625,7 @@ async function submitLogout() {
     localStorage.removeItem('authToken');
     router.push('/auth');
   } catch (err) {
+    suppressBeforeUnloadWarning = false;
     errorMessage.value = err.message;
   } finally {
     loading.value = false;
@@ -524,9 +638,7 @@ async function createRoom() {
   try {
     const data = await request('/rooms/create/', {
       method: 'POST',
-      body: JSON.stringify({
-        is_public: createRoomIsPublic.value,
-      }),
+      body: JSON.stringify({}),
     });
     setMatchmakingTicket(null);
     setRoom(data.room);
@@ -554,6 +666,7 @@ async function joinRoom() {
     });
     setMatchmakingTicket(null);
     setRoom(data.room);
+    closeJoinRoomModal();
     await loadPublicRooms();
   } catch (err) {
     errorMessage.value = err.message;
@@ -582,6 +695,43 @@ async function toggleReady() {
   }
 }
 
+async function toggleRoomVisibility() {
+  if (!currentRoom.value || !isCurrentUserHost.value) {
+    return;
+  }
+
+  roomBusy.value = true;
+  errorMessage.value = '';
+  try {
+    const nextIsPublic = !currentRoom.value.is_public;
+    const data = await request(`/rooms/${currentRoom.value.code}/visibility/`, {
+      method: 'POST',
+      body: JSON.stringify({ is_public: nextIsPublic }),
+    });
+    const cooldownSeconds = Number(data.visibility_toggle_cooldown_seconds ?? data.room?.visibility_toggle_cooldown_seconds ?? 10);
+    roomVisibilityLocalCooldownUntil.value = Date.now() + cooldownSeconds * 1000;
+    setRoom(data.room);
+    await loadPublicRooms();
+  } catch (err) {
+    errorMessage.value = err.message;
+  } finally {
+    roomBusy.value = false;
+  }
+}
+
+function handleVisibilityBadgeClick() {
+  if (!currentRoom.value || !isCurrentUserHost.value || roomBusy.value) {
+    return;
+  }
+
+  if (roomVisibilityCooldownRemaining.value > 0) {
+    showVisibilityCooldownToast();
+    return;
+  }
+
+  toggleRoomVisibility();
+}
+
 async function leaveRoom() {
   if (!currentRoom.value) {
     return;
@@ -596,6 +746,47 @@ async function leaveRoom() {
     });
     setRoom(null);
     await loadPublicRooms();
+  } catch (err) {
+    errorMessage.value = err.message;
+  } finally {
+    roomBusy.value = false;
+  }
+}
+
+async function kickMember(userId) {
+  if (!currentRoom.value || !userId) {
+    return;
+  }
+
+  roomBusy.value = true;
+  errorMessage.value = '';
+  try {
+    const data = await request(`/rooms/${currentRoom.value.code}/kick/`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId }),
+    });
+    setRoom(data.room);
+    await loadPublicRooms();
+  } catch (err) {
+    errorMessage.value = err.message;
+  } finally {
+    roomBusy.value = false;
+  }
+}
+
+async function transferHost(userId) {
+  if (!currentRoom.value || !userId) {
+    return;
+  }
+
+  roomBusy.value = true;
+  errorMessage.value = '';
+  try {
+    const data = await request(`/rooms/${currentRoom.value.code}/transfer-host/`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId }),
+    });
+    setRoom(data.room);
   } catch (err) {
     errorMessage.value = err.message;
   } finally {
@@ -724,6 +915,8 @@ function toggleStatsPanel() {
 }
 
 onMounted(async () => {
+  window.addEventListener('beforeunload', handleLobbyBeforeUnload);
+  startUiTicker();
   try {
     const data = await request('/auth/me/');
     currentUser.value = data.user;
@@ -740,8 +933,14 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', handleLobbyBeforeUnload);
+  if (visibilityCooldownNoticeTimerId) {
+    window.clearTimeout(visibilityCooldownNoticeTimerId);
+    visibilityCooldownNoticeTimerId = null;
+  }
   stopLobbyPolling();
   stopPublicRoomsPolling();
+  stopUiTicker();
   stopMatchmakingTimer();
   stopMatchmakingStatusPolling();
   closeRoomSocket();
@@ -750,145 +949,193 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="lobby-page" :style="{ '--lobby-bg-image': `url(${hallImage})` }">
-    <header class="lobby-header">
-      <div class="header-content">
-        <h1>Game Lobby</h1>
-        <button class="logout-btn" :disabled="loading" @click="submitLogout">
-          {{ loading ? 'Logging out...' : 'Logout' }}
-        </button>
-      </div>
-    </header>
+  <main class="lobby-page">
+    <section class="hall-board" :style="{ '--hall-bg-image': `url(${hallImage})` }">
+      <button class="top-logout-btn" :disabled="loading" @click="submitLogout">
+        {{ loading ? '登出中...' : '登出' }}
+      </button>
 
-    <div class="lobby-container">
-      <PlayerInfoCard
-        v-if="currentUser"
-        :user="currentUser"
-        @click="toggleStatsPanel"
-      />
+      <h1 class="hall-title">Game Lobby</h1>
 
-      <PlayerStatsPanel
-        v-if="showStatsPanel && currentUser"
-        :user="currentUser"
-        @close="toggleStatsPanel"
-      />
+      <section class="lobby-content-shell">
+        <p v-if="errorMessage" class="board-message error-message">{{ errorMessage }}</p>
+        <p v-if="matchmakingStatusText" class="board-message matchmaking-message">{{ matchmakingStatusText }}</p>
+        <transition name="cooldown-notice">
+          <p v-if="showVisibilityCooldownNotice" class="visibility-cooldown-notice">
+            {{ roomVisibilityCooldownRemaining }} 秒後才能再次切換
+          </p>
+        </transition>
 
-      <section class="room-panel">
-        <div class="room-header">
-          <div>
-            <p class="section-label">房間狀態</p>
-            <h2 v-if="currentRoom">房間 {{ currentRoom.code }}</h2>
-            <h2 v-else>尚未進入房間</h2>
-          </div>
-          <span v-if="currentRoom" class="room-status">{{ currentRoom.status }}</span>
-        </div>
+        <PlayerStatsPanel
+          v-if="showStatsPanel && currentUser"
+          :user="currentUser"
+          @close="toggleStatsPanel"
+        />
 
-        <p v-if="errorMessage" class="error-message">{{ errorMessage }}</p>
-        <p v-if="matchmakingStatusText" class="matchmaking-message">{{ matchmakingStatusText }}</p>
-
-        <div v-if="currentRoom" class="room-content">
-          <div class="seat-grid">
-            <div
-              v-for="(seat, index) in seats"
-              :key="seat.empty ? seat.id : seat.user.id || seat.user.username"
-              class="seat-card"
-              :class="{ empty: seat.empty, ready: seat.is_ready, host: seat.is_host }"
-            >
-              <span class="seat-index">P{{ index + 1 }}</span>
-              <strong>{{ seat.empty ? '等待玩家' : seat.user.nickname || seat.user.username }}</strong>
-              <small v-if="!seat.empty">
-                {{ seat.is_host ? '房主' : seat.is_ready ? '已準備' : '未準備' }}
-              </small>
+        <template v-if="currentRoom">
+          <section class="room-board-panel room-content-shell">
+            <div class="room-board-header">
+              <div>
+                <p class="small-label">目前房間</p>
+                <h2>房間 {{ currentRoom.code }}</h2>
+              </div>
+              <div class="room-badges">
+                <span>{{ currentRoom.status }}</span>
+                <span
+                  :class="{ 'room-badge-clickable': isCurrentUserHost }"
+                  @click="handleVisibilityBadgeClick"
+                >
+                  {{ currentRoom.is_public ? '公開' : '私密' }}
+                </span>
+              </div>
             </div>
-          </div>
 
-          <LobbyActionButtons
-            :busy="roomBusy"
-            :in-room="true"
-            :is-ready="!!currentMember?.is_ready"
-            :can-start="!!currentRoom.can_start"
-            :is-playing="currentRoom.status === 'Playing'"
-            :is-host="!!currentMember?.is_host"
-            :start-label="roomStartLabel"
-            @toggle-ready="toggleReady"
-            @start-game="startGame"
-            @test-start="startTestGame"
-            @leave-room="leaveRoom"
-            @return-game="returnToGame"
-          />
-        </div>
+            <div class="seat-grid">
+              <div
+                v-for="(seat, index) in seats"
+                :key="seat.empty ? seat.id : seat.user.id || seat.user.username"
+                class="seat-card"
+                :class="{ empty: seat.empty, ready: seat.is_ready, host: seat.is_host }"
+              >
+                <span class="seat-index">P{{ index + 1 }}</span>
+                <strong>{{ seat.empty ? '等待玩家' : seat.user.nickname || seat.user.username }}</strong>
+                <small v-if="!seat.empty">
+                  {{ seat.is_host ? '房主' : seat.is_ready ? '已準備' : '未準備' }}
+                </small>
+                <div
+                  v-if="canManageRoomMembers && !seat.empty && !seat.is_host && seat.user.id"
+                  class="seat-card-actions"
+                >
+                  <button
+                    type="button"
+                    class="seat-card-action seat-card-host-action"
+                    :disabled="roomBusy"
+                    @click="transferHost(seat.user.id)"
+                  >
+                    設房主
+                  </button>
+                  <button
+                    type="button"
+                    class="seat-card-action seat-card-kick-action"
+                    :disabled="roomBusy"
+                    @click="kickMember(seat.user.id)"
+                  >
+                    踢出
+                  </button>
+                </div>
+              </div>
+            </div>
 
-        <div v-else class="room-content">
-          <label class="join-field">
-            <span>房間代碼</span>
-            <input
-              v-model="joinCode"
-              maxlength="6"
-              inputmode="numeric"
-              placeholder="輸入 6 位數代碼"
-              @keyup.enter="joinRoom"
+            <LobbyActionButtons
+              :busy="roomBusy"
+              :in-room="true"
+              :is-ready="!!currentMember?.is_ready"
+              :can-start="!!currentRoom.can_start"
+              :is-playing="currentRoom.status === 'Playing'"
+              :is-host="!!currentMember?.is_host"
+              :start-label="roomStartLabel"
+              @toggle-ready="toggleReady"
+              @start-game="startGame"
+              @test-start="startTestGame"
+              @leave-room="leaveRoom"
+              @return-game="returnToGame"
             />
-          </label>
+          </section>
+        </template>
 
-          <label class="room-public-option">
-            <input
-              v-model="createRoomIsPublic"
-              type="checkbox"
-            />
-            <span>建立為公開房間</span>
-          </label>
-
-          <LobbyActionButtons
-            :busy="roomBusy"
-            :is-matchmaking="isMatchmaking"
-            @create-room="createRoom"
-            @join-room="joinRoom"
-            @join-matchmaking="joinMatchmaking"
-            @cancel-matchmaking="cancelMatchmaking"
-          />
-
-          <section class="public-room-section">
-            <div class="public-room-header">
-              <h3>公開房間</h3>
+        <template v-else>
+          <section class="public-lobby-panel public-content-shell">
+            <div class="public-panel-header">
               <button
                 type="button"
-                class="refresh-public-room-btn"
+                class="refresh-room-btn"
                 :disabled="publicRoomsLoading"
                 @click="loadPublicRooms"
               >
-                重新整理
+                <img :src="refreshPlaceholderIcon" alt="重新整理公開房間" class="refresh-room-icon">
               </button>
             </div>
 
-            <p v-if="publicRoomsError" class="public-room-error">
-              {{ publicRoomsError }}
-            </p>
+            <div v-if="publicRooms.length > 0" class="public-room-scroll">
+              <section
+                class="public-room-grid"
+                aria-label="公開房間列表"
+              >
+                <button
+                  v-for="room in publicRooms"
+                  :key="room.code"
+                  type="button"
+                  class="public-room-slot"
+                  :disabled="roomBusy || room.member_count >= room.max_members || room.is_matchmaking"
+                  @click="joinPublicRoom(room)"
+                >
+                  <strong>房間 {{ room.code }}</strong>
+                  <span>{{ room.member_count }}/{{ room.max_members }} 人</span>
+                  <small>{{ room.status }}</small>
+                </button>
+              </section>
+            </div>
 
+            <p v-if="publicRoomsError" class="public-room-error">{{ publicRoomsError }}</p>
             <p v-else-if="!publicRoomsLoading && publicRooms.length === 0" class="public-room-empty">
               目前沒有可加入的公開房間
             </p>
 
-            <div
-              v-for="room in publicRooms"
-              :key="room.code"
-              class="public-room-card"
-            >
-              <div>
-                <strong>房間 {{ room.code }}</strong>
-                <div>人數：{{ room.member_count }}/{{ room.max_members }}</div>
-                <div>狀態：{{ room.status }}</div>
-              </div>
+            <div class="public-action-row">
+              <button type="button" class="lobby-action-skin lobby-action-btn utility-blue-btn" @click="toggleStatsPanel">
+                看戰績
+              </button>
+
+              <button type="button" class="lobby-action-skin lobby-action-btn utility-blue-btn" @click="openJoinRoomModal">
+                搜尋房間
+              </button>
+
+              <button type="button" class="lobby-action-skin lobby-action-btn accent-purple-btn" :disabled="roomBusy" @click="createRoom">
+                創建房間
+              </button>
 
               <button
+                v-if="!isMatchmaking"
                 type="button"
-                class="join-public-room-btn"
-                :disabled="roomBusy || room.member_count >= room.max_members || room.is_matchmaking"
-                @click="joinPublicRoom(room)"
+                class="lobby-action-skin lobby-action-btn success-green-btn"
+                :disabled="roomBusy"
+                @click="joinMatchmaking"
               >
-                加入
+                開始配對
+              </button>
+              <button
+                v-else
+                type="button"
+                class="lobby-action-skin lobby-action-btn warning-orange-btn"
+                :disabled="roomBusy"
+                @click="cancelMatchmaking"
+              >
+                取消配對
               </button>
             </div>
           </section>
+        </template>
+      </section>
+    </section>
+
+    <div v-if="showJoinRoomModal" class="modal-overlay" @click="closeJoinRoomModal">
+      <section class="join-room-modal" @click.stop>
+        <h2>搜尋房間</h2>
+        <p>輸入 6 位數房間碼加入房間。</p>
+        <input
+          v-model="joinCode"
+          maxlength="6"
+          inputmode="numeric"
+          placeholder="輸入房間碼"
+          @keyup.enter="joinRoom"
+        />
+        <div class="modal-actions">
+          <button type="button" class="wood-btn small-wood-btn" :disabled="roomBusy" @click="joinRoom">
+            加入
+          </button>
+          <button type="button" class="wood-btn small-wood-btn secondary" @click="closeJoinRoomModal">
+            取消
+          </button>
         </div>
       </section>
     </div>
@@ -898,163 +1145,430 @@ onBeforeUnmount(() => {
 <style scoped>
 .lobby-page {
   min-height: 100vh;
-  background:
-    linear-gradient(rgba(15, 23, 42, 0.42), rgba(15, 23, 42, 0.5)),
-    var(--lobby-bg-image) center / contain no-repeat fixed;
-  background-color: #0f172a;
-  display: flex;
-  flex-direction: column;
-}
-
-.lobby-header {
-  background: #ffffff;
-  border-bottom: 1px solid #d8dee8;
-  padding: 16px 32px;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
-}
-
-.header-content {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  max-width: 1400px;
-  margin: 0 auto;
-  width: 100%;
-}
-
-.lobby-header h1 {
-  margin: 0;
-  font-size: 28px;
-  color: #1f2937;
-}
-
-.logout-btn {
-  background: #ef4444;
-  color: #ffffff;
-  border: 1px solid #dc2626;
-  border-radius: 6px;
-  padding: 8px 16px;
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
-  transition: all 0.2s;
-}
-
-.logout-btn:hover {
-  background: #dc2626;
-}
-
-.logout-btn:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
-}
-
-.lobby-container {
-  flex: 1;
-  padding: 32px;
   position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 20%, rgba(70, 103, 138, 0.28), transparent 34%),
+    linear-gradient(180deg, #06101d 0%, #0b1626 52%, #060d18 100%);
+  display: grid;
+  place-items: center;
+  padding: 3vh 3vw;
 }
 
-.room-panel {
-  max-width: 760px;
-  margin: 28px auto 0;
-  padding: 22px;
-  border: 1px solid #d8dee8;
-  border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+.top-logout-btn {
+  --logout-top: 12%;
+  --logout-right: 12%;
+  --logout-width: 7%;
+  --logout-height: 6.8%;
+  position: absolute;
+  top: var(--logout-top);
+  right: var(--logout-right);
+  z-index: 20;
+  min-width: var(--logout-width);
+  min-height: var(--logout-height);
+  padding: 0.7vh 1vw;
 }
 
-.room-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
-  margin-bottom: 18px;
-}
-
-.section-label {
-  margin: 0 0 4px;
-  color: #64748b;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.room-header h2 {
+.hall-title {
+  position: absolute;
+  left: 27.6%;
+  top: 8.9%;
+  width: 45%;
+  height: 13.5%;
   margin: 0;
-  color: #111827;
-  font-size: 24px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: #3c2714;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: clamp(1.7rem, 3.2vw, 4.8rem);
+  letter-spacing: 0.18em;
+  font-weight: 500;
+  text-shadow: 0 0.15vw 0.4vw rgba(255, 248, 237, 0.55);
 }
 
-.room-status {
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: #e0f2fe;
-  color: #0369a1;
-  font-size: 13px;
+.lobby-content-shell {
+  --content-safe-left: 11%;
+  --content-safe-right: 11%;
+  --content-safe-top: 24.6%;
+  --content-safe-bottom: 9%;
+  --room-safe-left: 0%;
+  --room-safe-right: 0%;
+  --room-safe-top: 0%;
+  --room-safe-bottom: 3%;
+  --public-safe-left: 0%;
+  --public-safe-right: 0%;
+  --public-safe-top: 0%;
+  --public-safe-bottom: 0%;
+  --public-room-columns: 2;
+  --public-room-visible-rows: 3;
+  --public-room-row-gap: 2.2vh;
+  --public-room-column-gap: 3%;
+  --public-room-slot-height: 10.8vh;
+  position: absolute;
+  left: var(--content-safe-left);
+  right: var(--content-safe-right);
+  top: var(--content-safe-top);
+  bottom: var(--content-safe-bottom);
+}
+
+.public-content-shell {
+  margin-left: var(--public-safe-left);
+  margin-right: var(--public-safe-right);
+  margin-top: var(--public-safe-top);
+  margin-bottom: var(--public-safe-bottom);
+}
+
+.board-message {
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  top: 0;
+  z-index: 5;
+  margin: 0;
+  padding: 0.8vh 1vw;
+  border-radius: 0.55vw;
+  text-align: center;
+  font-size: clamp(0.8rem, 0.95vw, 1.35rem);
   font-weight: 700;
 }
 
 .error-message {
-  margin: 0 0 16px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: #fee2e2;
+  background: rgba(254, 226, 226, 0.96);
   color: #991b1b;
-  font-size: 14px;
 }
 
 .matchmaking-message {
-  margin: 0 0 16px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: #dcfce7;
+  background: rgba(220, 252, 231, 0.96);
   color: #166534;
-  font-size: 14px;
+}
+
+.visibility-cooldown-notice {
+  position: absolute;
+  top: 8%;
+  left: 50%;
+  z-index: 12;
+  margin: 0;
+  padding: 0.85vh 1vw;
+  border-radius: 999vw;
+  background: rgba(31, 41, 55, 0.9);
+  color: #ffffff;
+  font-size: clamp(0.78rem, 0.9vw, 1.2rem);
+  font-weight: 700;
+  transform: translateX(-50%);
+  box-shadow: 0 0.55vw 1.1vw rgba(15, 23, 42, 0.18);
+}
+
+.cooldown-notice-enter-active,
+.cooldown-notice-leave-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.cooldown-notice-enter-from,
+.cooldown-notice-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-0.8vh);
+}
+
+.public-room-grid {
+  width: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--public-room-columns), minmax(0, 1fr));
+  grid-auto-rows: var(--public-room-slot-height);
+  row-gap: var(--public-room-row-gap);
+  column-gap: var(--public-room-column-gap);
+}
+
+.public-room-scroll {
+  height: calc(
+    (var(--public-room-slot-height) * var(--public-room-visible-rows))
+    + (var(--public-room-row-gap) * (var(--public-room-visible-rows) - 1))
+  );
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0.8%;
+  scrollbar-width: thin;
+}
+
+.public-room-scroll::-webkit-scrollbar {
+  width: 0.55vw;
+}
+
+.public-room-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999vw;
+  background: rgba(73, 50, 26, 0.45);
+}
+
+.public-room-slot {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 0.25vh;
+  border: 0.08vw solid rgba(43, 31, 22, 0.58);
+  border-radius: 0.55vw;
+  background: rgba(255, 255, 255, 0.94);
+  color: #21170f;
+  cursor: pointer;
+  font-size: clamp(0.9rem, 1.12vw, 1.7rem);
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+  min-height: var(--public-room-slot-height);
+}
+
+.public-room-slot:hover:not(:disabled) {
+  transform: translateY(-0.25vh);
+  box-shadow: 0 0.5vw 1vw rgba(0, 0, 0, 0.23);
+}
+
+.public-room-slot:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.public-room-slot strong {
+  font-size: clamp(1.05rem, 1.42vw, 2.2rem);
   font-weight: 700;
 }
 
-.room-content {
+.public-room-slot small {
+  opacity: 0.72;
+}
+
+.public-room-empty,
+.public-room-error {
+  margin: 0;
+  min-height: 3.8vh;
+  text-align: center;
+  font-size: clamp(0.85rem, 1vw, 1.45rem);
+  font-weight: 700;
+}
+
+.public-room-empty {
+  color: rgba(35, 23, 13, 0.78);
+}
+
+.public-room-error {
+  color: #991b1b;
+}
+
+.wood-btn,
+.lobby-action-skin,
+.top-logout-btn {
+  border: 0.08vw solid #cbd5e1;
+  border-radius: 0.55vw;
+  color: #ffffff;
+  cursor: pointer;
+  font-size: clamp(0.92rem, 1vw, 1.5rem);
+  font-weight: 700;
+  line-height: 1;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+  box-shadow: 0 0.35vw 0.9vw rgba(15, 23, 42, 0.12);
+}
+
+.wood-btn:hover:not(:disabled),
+.lobby-action-skin:hover:not(:disabled),
+.top-logout-btn:hover:not(:disabled) {
+  transform: translateY(-0.25vh);
+  box-shadow: 0 0.6vw 1.25vw rgba(15, 23, 42, 0.16);
+}
+
+.wood-btn:disabled,
+.lobby-action-skin:disabled,
+.top-logout-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.wood-btn {
+  background: #2563eb;
+  border-color: #1d4ed8;
+}
+
+.utility-blue-btn {
+  background: #2563eb;
+  border-color: #1d4ed8;
+}
+
+.success-green-btn {
+  background: #16a34a;
+  border-color: #15803d;
+}
+
+.accent-purple-btn {
+  background: #7c3aed;
+  border-color: #6d28d9;
+}
+
+.danger-red-btn,
+.top-logout-btn {
+  background: #ef4444;
+  border-color: #dc2626;
+}
+
+.warning-orange-btn {
+  background: #f97316;
+  border-color: #ea580c;
+}
+
+.hall-board {
+  position: relative;
+  width: min(88vw, 160vh);
+  aspect-ratio: 1.72 / 1;
+  background: var(--hall-bg-image) center / 100% 100% no-repeat;
+  filter: drop-shadow(0 1.2vw 1.6vw rgba(0, 0, 0, 0.45));
+}
+
+.public-lobby-panel {
+  position: relative;
+  height: 100%;
   display: grid;
-  gap: 18px;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 3.4%;
+}
+
+.public-panel-header {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  min-height: 5.6vh;
+}
+
+.refresh-room-btn {
+  --refresh-button-width: 4.8%;
+  --refresh-button-min-width: 2.8rem;
+  display: grid;
+  place-items: center;
+  width: var(--refresh-button-width);
+  min-width: var(--refresh-button-min-width);
+  aspect-ratio: 1;
+  padding: 0.5%;
+  border: 0.08vw solid rgba(34, 24, 16, 0.48);
+  border-radius: 0.45vw;
+  background: rgba(255, 255, 255, 0.86);
+  cursor: pointer;
+}
+
+.refresh-room-icon {
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+}
+
+.public-action-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1.2%;
+  align-items: stretch;
+}
+
+.lobby-action-btn {
+  width: 100%;
+  min-height: 8.6vh;
+  padding: 0.7vh 1vw;
+}
+
+.visibility-toggle-btn {
+  min-height: 4.7vh;
+  min-width: 14%;
+  padding: 0.7vh 1vw;
+  font-size: clamp(0.78rem, 0.9vw, 1.35rem);
+}
+
+.room-board-panel {
+  --room-panel-padding-y: 1.4%;
+  --room-panel-padding-x: 2%;
+  --room-panel-radius: 1.2%;
+  --room-panel-gap: 2.2%;
+  --room-panel-bg: rgba(255, 255, 255, 0.82);
+  width: calc(100% - var(--room-safe-left) - var(--room-safe-right));
+  height: calc(100% - var(--room-safe-top) - var(--room-safe-bottom));
+  margin-left: var(--room-safe-left);
+  margin-top: var(--room-safe-top);
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  gap: var(--room-panel-gap);
+  padding: var(--room-panel-padding-y) var(--room-panel-padding-x);
+  border-radius: var(--room-panel-radius);
+  background: var(--room-panel-bg);
+  color: #1f160d;
+  box-sizing: border-box;
+}
+
+.room-board-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1vw;
+}
+
+.small-label,
+.room-board-header h2 {
+  margin: 0;
+}
+
+.small-label {
+  font-size: clamp(0.75rem, 0.85vw, 1.2rem);
+  color: rgba(31, 22, 13, 0.72);
+  font-weight: 700;
+}
+
+.room-board-header h2 {
+  font-size: clamp(1.2rem, 1.8vw, 2.7rem);
+}
+
+.room-badges {
+  display: flex;
+  gap: 0.6vw;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.room-badges span {
+  border-radius: 999vw;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 0.45vh 0.8vw;
+  font-size: clamp(0.75rem, 0.85vw, 1.2rem);
+  font-weight: 700;
+}
+
+.room-badge-clickable {
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+}
+
+.room-badge-clickable:hover {
+  transform: translateY(-0.12vh);
+  box-shadow: 0 0.4vw 0.85vw rgba(15, 23, 42, 0.14);
 }
 
 .seat-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 1vw;
 }
 
 .seat-card {
-  min-height: 108px;
   display: grid;
   align-content: center;
-  gap: 6px;
-  padding: 14px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  background: #f8fafc;
-  color: #0f172a;
+  gap: 0.4vh;
+  padding: 1.1vh 0.8vw;
+  border: 0.08vw solid rgba(43, 31, 22, 0.38);
+  border-radius: 0.6vw;
+  background: rgba(255, 255, 255, 0.74);
+  min-width: 0;
 }
 
 .seat-card.ready {
-  border-color: #22c55e;
-  background: #f0fdf4;
+  border-color: rgba(22, 101, 52, 0.85);
 }
 
 .seat-card.host {
-  border-color: #2563eb;
+  border-color: rgba(37, 99, 235, 0.72);
 }
 
 .seat-card.empty {
-  color: #94a3b8;
+  color: rgba(31, 22, 13, 0.45);
   border-style: dashed;
-}
-
-.seat-index {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 800;
 }
 
 .seat-card strong {
@@ -1062,116 +1576,155 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: clamp(0.9rem, 1vw, 1.55rem);
 }
 
+.seat-index,
 .seat-card small {
-  color: #475569;
+  font-size: clamp(0.72rem, 0.78vw, 1.1rem);
 }
 
-.join-field {
-  display: grid;
-  gap: 8px;
-  color: #334155;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.join-field input {
-  width: min(280px, 100%);
-  height: 42px;
-  padding: 0 12px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  font-size: 16px;
-}
-
-.room-public-option {
+.seat-card-actions {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #334155;
-  font-size: 14px;
-  font-weight: 700;
+  flex-wrap: wrap;
+  gap: 0.45vh 0.35vw;
+  margin-top: 0.35vh;
 }
 
-.room-public-option input {
-  width: 16px;
-  height: 16px;
-}
-
-.public-room-section {
-  display: grid;
-  gap: 10px;
-  margin-top: 8px;
-  padding-top: 18px;
-  border-top: 1px solid #e2e8f0;
-}
-
-.public-room-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.public-room-header h3 {
-  margin: 0;
-  color: #111827;
-  font-size: 18px;
-}
-
-.refresh-public-room-btn,
-.join-public-room-btn {
-  min-height: 36px;
-  padding: 8px 12px;
-  border: 1px solid #1d4ed8;
-  border-radius: 8px;
-  background: #2563eb;
+.seat-card-action {
+  border: 0.08vw solid #cbd5e1;
+  border-radius: 999vw;
+  padding: 0.3vh 0.55vw;
   color: #ffffff;
-  font-size: 13px;
+  font-size: clamp(0.62rem, 0.7vw, 0.98rem);
   font-weight: 700;
+  line-height: 1;
   cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
 }
 
-.refresh-public-room-btn:disabled,
-.join-public-room-btn:disabled {
-  opacity: 0.5;
+.seat-card-action:hover:not(:disabled) {
+  transform: translateY(-0.1vh);
+  box-shadow: 0 0.32vw 0.65vw rgba(15, 23, 42, 0.14);
+}
+
+.seat-card-action:disabled {
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
-.public-room-card {
+.seat-card-host-action {
+  background: #2563eb;
+  border-color: #1d4ed8;
+}
+
+.seat-card-kick-action {
+  background: #ef4444;
+  border-color: #dc2626;
+}
+
+.small-wood-btn {
+  min-height: 4.8vh;
+  padding: 0.7vh 1vw;
+  font-size: clamp(0.9rem, 1vw, 1.5rem);
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.48);
+}
+
+.join-room-modal {
+  width: min(34vw, 70vh);
+  min-width: min(88vw, 24rem);
+  display: grid;
+  gap: 1.4vh;
+  padding: 2.4vh 2vw;
+  border-radius: 0.9vw;
+  background: rgba(255, 255, 255, 0.97);
+  color: #1f160d;
+  box-shadow: 0 1vw 2.2vw rgba(0, 0, 0, 0.35);
+}
+
+.join-room-modal h2,
+.join-room-modal p {
+  margin: 0;
+}
+
+.join-room-modal h2 {
+  font-size: clamp(1.3rem, 2vw, 3rem);
+}
+
+.join-room-modal p {
+  font-size: clamp(0.9rem, 1vw, 1.4rem);
+}
+
+.join-room-modal input {
+  min-height: 5.5vh;
+  border: 0.08vw solid rgba(43, 31, 22, 0.42);
+  border-radius: 0.55vw;
+  padding: 0 1vw;
+  font-size: clamp(1rem, 1.2vw, 1.8rem);
+}
+
+.modal-actions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 14px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  background: #f8fafc;
-  color: #0f172a;
+  justify-content: flex-end;
+  gap: 1vw;
 }
 
-.public-room-card strong {
-  display: block;
-  margin-bottom: 4px;
+.secondary {
+  background: #f97316;
+  border-color: #ea580c;
 }
 
-.public-room-empty {
-  margin: 0;
-  color: #64748b;
-  font-size: 14px;
+:deep(.action-buttons) {
+  justify-content: flex-end;
+  gap: 0.7vw;
 }
 
-.public-room-error {
-  margin: 0;
-  color: #991b1b;
-  font-size: 14px;
-  font-weight: 700;
+:deep(.action-btn) {
+  min-width: 7.5vw;
+  min-height: 4.7vh;
+  padding: 0.7vh 1vw;
+  border-radius: 0.55vw;
+  font-size: clamp(0.78rem, 0.9vw, 1.35rem);
+}
+
+@media (max-aspect-ratio: 4 / 3) {
+  .hall-board {
+    width: 96vw;
+  }
+
+  .public-action-row {
+    gap: 0.8%;
+  }
+
+  .wood-btn {
+    font-size: clamp(0.95rem, 2.25vw, 2.6rem);
+  }
 }
 
 @media (max-width: 760px) {
-  .lobby-container {
-    padding: 18px;
+  .lobby-page {
+    padding: 1.5vh 1.5vw;
+  }
+
+  .hall-board {
+    width: 98vw;
+  }
+
+  .public-room-grid {
+    row-gap: 1.8vh;
+    column-gap: 2.4%;
+  }
+
+  .public-action-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .seat-grid {
