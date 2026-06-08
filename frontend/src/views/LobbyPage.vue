@@ -21,6 +21,7 @@ const uiTick = ref(Date.now());
 const publicRooms = ref([]);
 const publicRoomsLoading = ref(false);
 const publicRoomsError = ref('');
+const publicRoomsLoaded = ref(false);
 const loading = ref(false);
 const roomBusy = ref(false);
 const errorMessage = ref('');
@@ -529,14 +530,31 @@ function stopLobbyPolling() {
 }
 
 async function loadPublicRooms() {
-  publicRoomsLoading.value = true;
-  publicRoomsError.value = '';
+  const shouldShowLoading = !publicRoomsLoaded.value;
+  if (shouldShowLoading) {
+    publicRoomsLoading.value = true;
+  }
 
   try {
     const data = await request('/rooms/public/');
-    publicRooms.value = data.rooms || [];
+    const nextRooms = data.rooms || [];
+    const currentSnapshot = JSON.stringify(publicRooms.value);
+    const nextSnapshot = JSON.stringify(nextRooms);
+
+    if (currentSnapshot !== nextSnapshot) {
+      publicRooms.value = nextRooms;
+    }
+
+    if (publicRoomsError.value) {
+      publicRoomsError.value = '';
+    }
+
+    publicRoomsLoaded.value = true;
   } catch (err) {
-    publicRoomsError.value = err.message || '無法取得公開房間列表。';
+    const nextError = err.message || '無法取得公開房間列表。';
+    if (publicRoomsError.value !== nextError) {
+      publicRoomsError.value = nextError;
+    }
   } finally {
     publicRoomsLoading.value = false;
   }
@@ -1056,30 +1074,35 @@ onBeforeUnmount(() => {
               </button>
             </div>
 
-            <div v-if="publicRooms.length > 0" class="public-room-scroll">
-              <section
-                class="public-room-grid"
-                aria-label="公開房間列表"
-              >
-                <button
-                  v-for="room in publicRooms"
-                  :key="room.code"
-                  type="button"
-                  class="public-room-slot"
-                  :disabled="roomBusy || room.member_count >= room.max_members || room.is_matchmaking"
-                  @click="joinPublicRoom(room)"
+            <div class="public-room-stage">
+              <div class="public-room-scroll">
+                <section
+                  v-if="publicRooms.length > 0"
+                  class="public-room-grid"
+                  aria-label="公開房間列表"
                 >
-                  <strong>房間 {{ room.code }}</strong>
-                  <span>{{ room.member_count }}/{{ room.max_members }} 人</span>
-                  <small>{{ room.status }}</small>
-                </button>
-              </section>
-            </div>
+                  <button
+                    v-for="room in publicRooms"
+                    :key="room.code"
+                    type="button"
+                    class="public-room-slot"
+                    :disabled="roomBusy || room.member_count >= room.max_members || room.is_matchmaking"
+                    @click="joinPublicRoom(room)"
+                  >
+                    <strong>房間 {{ room.code }}</strong>
+                    <span>{{ room.member_count }}/{{ room.max_members }} 人</span>
+                    <small>{{ room.status }}</small>
+                  </button>
+                </section>
 
-            <p v-if="publicRoomsError" class="public-room-error">{{ publicRoomsError }}</p>
-            <p v-else-if="!publicRoomsLoading && publicRooms.length === 0" class="public-room-empty">
-              目前沒有可加入的公開房間
-            </p>
+                <div v-else class="public-room-state">
+                  <p v-if="publicRoomsError" class="public-room-error">{{ publicRoomsError }}</p>
+                  <p v-else class="public-room-empty">
+                    目前沒有可加入的公開房間
+                  </p>
+                </div>
+              </div>
+            </div>
 
             <div class="public-action-row">
               <button type="button" class="lobby-action-skin lobby-action-btn utility-blue-btn" @click="toggleStatsPanel">
@@ -1191,7 +1214,7 @@ onBeforeUnmount(() => {
   --content-safe-left: 11%;
   --content-safe-right: 11%;
   --content-safe-top: 24.6%;
-  --content-safe-bottom: 9%;
+  --content-safe-bottom: 12%;
   --room-safe-left: 0%;
   --room-safe-right: 0%;
   --room-safe-top: 0%;
@@ -1280,8 +1303,18 @@ onBeforeUnmount(() => {
   column-gap: var(--public-room-column-gap);
 }
 
+.public-room-stage {
+  min-height: 0;
+  display: grid;
+  align-items: start;
+}
+
 .public-room-scroll {
   height: calc(
+    (var(--public-room-slot-height) * var(--public-room-visible-rows))
+    + (var(--public-room-row-gap) * (var(--public-room-visible-rows) - 1))
+  );
+  min-height: calc(
     (var(--public-room-slot-height) * var(--public-room-visible-rows))
     + (var(--public-room-row-gap) * (var(--public-room-visible-rows) - 1))
   );
@@ -1334,10 +1367,17 @@ onBeforeUnmount(() => {
   opacity: 0.72;
 }
 
+.public-room-state {
+  width: 100%;
+  height: 100%;
+  min-height: inherit;
+  display: grid;
+  place-items: center;
+}
+
 .public-room-empty,
 .public-room-error {
   margin: 0;
-  min-height: 3.8vh;
   text-align: center;
   font-size: clamp(0.85rem, 1vw, 1.45rem);
   font-weight: 700;
@@ -1422,7 +1462,7 @@ onBeforeUnmount(() => {
   position: relative;
   height: 100%;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 3.4%;
 }
 
