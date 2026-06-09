@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import cardBackUrl from '../assets/source/card-back.png';
@@ -36,6 +36,8 @@ let turnTimerId = null;
 let currentTurnStartedAt = null;
 let gameStartedAt = null;
 let gameTimeLimitSeconds = 15 * 60;
+let suppressPageUnloadLeave = false;
+let pageUnloadLeaveSent = false;
 
 const topCardCount = ref(6);
 const leftCardCount = ref(7);
@@ -1098,6 +1100,68 @@ async function leaveRoom() {
   }
 }
 
+function sendLeaveRoomBeacon(reason) {
+  if (!roomId.value) {
+    return;
+  }
+
+  const url = `${API_BASE}/rooms/${roomId.value}/leave/`;
+  const payload = JSON.stringify({ reason });
+
+  if (navigator.sendBeacon) {
+    const blob = new Blob([payload], { type: 'application/json' });
+    navigator.sendBeacon(url, blob);
+    return;
+  }
+
+  fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload,
+    keepalive: true,
+  }).catch(() => {});
+}
+
+function sendLeaveGameSocketOnUnload() {
+  if (!gameSocket || gameSocket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  try {
+    gameSocket.send(JSON.stringify({ action: 'leave_game' }));
+  } catch (err) {
+    console.warn('Failed to send leave_game before page unload:', err);
+  }
+}
+
+function leaveGameOnPageUnload() {
+  if (suppressPageUnloadLeave || pageUnloadLeaveSent || !roomId.value) {
+    return;
+  }
+
+  pageUnloadLeaveSent = true;
+
+  if (showGameOverModal.value) {
+    sendLeaveRoomBeacon('game_over_page_unload');
+    return;
+  }
+
+  // 關閉遊戲頁要盡量等同按下「退出」：先通知遊戲 WS 執行 leave_game，
+  // 讓後端可把玩家改成 AI 代打；再用 keepalive/beacon 補一個房間離開請求。
+  sendLeaveGameSocketOnUnload();
+  sendLeaveRoomBeacon('game_page_unload');
+}
+
+function handleGameBeforeUnload(event) {
+  if (suppressPageUnloadLeave || showGameOverModal.value) {
+    return;
+  }
+
+  event.preventDefault();
+  event.returnValue = '確定要離開本局遊戲嗎？離開後本局會由 AI 代打，你將無法重新加入。';
+}
+
 async function handleExitRoom() {
   if (showGameOverModal.value) {
     await leaveRoomAfterGame();
@@ -1110,6 +1174,8 @@ async function handleExitRoom() {
   }
 
   await leaveCurrentGame();
+  suppressPageUnloadLeave = true;
+  pageUnloadLeaveSent = true;
   closeGameSocket();
   window.location.assign('/lobby?left=1');
 }
@@ -1123,6 +1189,8 @@ async function leaveRoomAfterGame() {
     console.warn('Failed to leave room after game ended:', err);
   }
 
+  suppressPageUnloadLeave = true;
+  pageUnloadLeaveSent = true;
   closeGameSocket();
   window.location.assign('/lobby');
 }
@@ -1130,6 +1198,7 @@ async function leaveRoomAfterGame() {
 function returnToRoomForNextRound() {
   // 結算後按「再來一局」代表保留自己的 RoomMember。
   // 回到 lobby 後 current-room API 會把玩家帶回原本房間。
+  suppressPageUnloadLeave = true;
   closeGameSocket();
   window.location.assign('/lobby');
 }
@@ -1474,10 +1543,14 @@ function playerCardStyle(index) {
 }
 
 onMounted(() => {
+  window.addEventListener('beforeunload', handleGameBeforeUnload);
+  window.addEventListener('pagehide', leaveGameOnPageUnload);
   setupGameServerConnection();
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', handleGameBeforeUnload);
+  window.removeEventListener('pagehide', leaveGameOnPageUnload);
   stopLocalTurnCountdown();
   closeGameSocket();
 });

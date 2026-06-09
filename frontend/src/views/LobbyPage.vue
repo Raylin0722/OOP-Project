@@ -42,6 +42,7 @@ let matchmakingReconnectTimerId = null;
 let visibilityCooldownNoticeTimerId = null;
 let matchmakingReadyLockedNoticeTimerId = null;
 let suppressBeforeUnloadWarning = false;
+let lobbyUnloadLeaveSent = false;
 
 const currentMember = computed(() => {
   if (!currentUser.value || !currentRoom.value) {
@@ -617,28 +618,43 @@ function shouldWarnBeforeLeavingLobby() {
   return !suppressBeforeUnloadWarning && Boolean(currentRoom.value || matchmakingTicket.value);
 }
 
-function leaveRoomOnPageUnload() {
-  const roomCode = currentRoom.value?.code;
-  if (!roomCode || currentRoom.value?.status === 'Playing') {
-    return;
-  }
-
-  const url = `${API_BASE}/rooms/${roomCode}/leave/`;
-  const payload = JSON.stringify({ reason: 'page_unload' });
+function sendLobbyBeacon(path, payload) {
+  const url = `${API_BASE}${path}`;
+  const body = JSON.stringify(payload || {});
 
   if (navigator.sendBeacon) {
-    const blob = new Blob([payload], { type: 'application/json' });
-    navigator.sendBeacon(url, blob);
-    return;
+    const blob = new Blob([body], { type: 'application/json' });
+    const sent = navigator.sendBeacon(url, blob);
+    if (sent) {
+      return;
+    }
   }
 
   fetch(url, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: payload,
+    body,
     keepalive: true,
   }).catch(() => {});
+}
+
+function leaveRoomOnPageUnload() {
+  if (suppressBeforeUnloadWarning || lobbyUnloadLeaveSent) {
+    return;
+  }
+
+  if (!currentRoom.value && !matchmakingTicket.value) {
+    return;
+  }
+
+  lobbyUnloadLeaveSent = true;
+
+  // 關閉房間大廳時，不再分別呼叫 cancel/leave，
+  // 而是直接呼叫後端 presence cleanup。
+  // 這會共用登出時有效的 _cleanup_user_presence()，
+  // 但不會真的登出帳號。
+  sendLobbyBeacon('/presence/cleanup/', { reason: 'lobby_page_unload' });
 }
 
 function handleLobbyBeforeUnload(event) {

@@ -29,7 +29,7 @@ const routes = [
   },
   {
     path: '/',
-    redirect: '/auth',
+    redirect: (to) => ({ path: '/auth', query: to.query }),
   },
 ];
 

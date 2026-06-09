@@ -11,6 +11,7 @@ urlpatterns = [
     path('auth/reset-password/', views.reset_password, name='reset_password'),
     path('auth/login/', views.login_view, name='login'),
     path('auth/logout/', views.logout_view, name='logout'),
+    path('presence/cleanup/', views.cleanup_presence, name='cleanup_presence'),
     path('auth/me/', views.me, name='me'),
 
     # 房間相關
