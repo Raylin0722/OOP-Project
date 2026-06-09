@@ -103,21 +103,30 @@ defineEmits([
 }
 
 .action-btn {
-  min-width: 116px;
-  min-height: 42px;
+  --lobby-button-aspect-ratio: 668 / 330;
+  --lobby-button-text-offset-y: 5%;
+  width: 116px;
+  min-height: 0;
   padding: 10px 16px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  color: #ffffff;
+  border: 0;
+  border-radius: 0;
+  color: #3c2714;
+  display: inline-grid;
+  place-items: center;
+  aspect-ratio: var(--lobby-button-aspect-ratio);
+  background: var(--lobby-button-image, url("../assets/pictures/lobbybutton.png")) center / 100% 100% no-repeat;
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
+  text-shadow: 0 1px 1px rgba(255, 245, 220, 0.55);
+  text-align: center;
+  padding-block-start: var(--lobby-button-text-offset-y);
   transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
 }
 
 .action-btn:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.14);
+  filter: brightness(1.06);
 }
 
 .action-btn:disabled {
@@ -127,38 +136,31 @@ defineEmits([
 
 .create-btn,
 .join-btn {
-  background: #2563eb;
-  border-color: #1d4ed8;
+  background: var(--lobby-button-image, url("../assets/pictures/lobbybutton.png")) center / 100% 100% no-repeat;
 }
 
 .ready-btn {
-  background: #0f766e;
-  border-color: #0f766e;
+  background: var(--lobby-button-image, url("../assets/pictures/lobbybutton.png")) center / 100% 100% no-repeat;
 }
 
 .start-btn,
 .matchmaking-btn {
-  background: #16a34a;
-  border-color: #15803d;
+  background: var(--lobby-button-image, url("../assets/pictures/lobbybutton.png")) center / 100% 100% no-repeat;
 }
 
 .test-btn {
-  background: #7c3aed;
-  border-color: #6d28d9;
+  background: var(--lobby-button-image, url("../assets/pictures/lobbybutton.png")) center / 100% 100% no-repeat;
 }
 
 .return-btn {
-  background: #2563eb;
-  border-color: #1d4ed8;
+  background: var(--lobby-button-image, url("../assets/pictures/lobbybutton.png")) center / 100% 100% no-repeat;
 }
 
 .matchmaking-cancel-btn {
-  background: #f97316;
-  border-color: #ea580c;
+  background: var(--lobby-button-image, url("../assets/pictures/lobbybutton.png")) center / 100% 100% no-repeat;
 }
 
 .leave-btn {
-  background: #ef4444;
-  border-color: #dc2626;
+  background: var(--lobby-button-image, url("../assets/pictures/lobbybutton.png")) center / 100% 100% no-repeat;
 }
 </style>

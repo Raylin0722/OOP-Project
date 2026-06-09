@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import PlayerStatsPanel from '../components/PlayerStatsPanel.vue';
 import LobbyActionButtons from '../components/LobbyActionButtons.vue';
 import hallImage from '../assets/pictures/hall.jpg';
+import lobbyButtonImage from '../assets/pictures/lobbybutton.png';
 import refreshPlaceholderIcon from '../assets/pictures/lobby-refresh-placeholder.svg';
 
 const API_BASE = '/api';
@@ -968,7 +969,7 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="lobby-page">
-    <section class="hall-board" :style="{ '--hall-bg-image': `url(${hallImage})` }">
+    <section class="hall-board" :style="{ '--hall-bg-image': `url(${hallImage})`, '--lobby-button-image': `url(${lobbyButtonImage})` }">
       <button class="top-logout-btn" :disabled="loading" @click="submitLogout">
         {{ loading ? '登出中...' : '登出' }}
       </button>
@@ -1030,7 +1031,7 @@ onBeforeUnmount(() => {
                     :disabled="roomBusy"
                     @click="transferHost(seat.user.id)"
                   >
-                    設房主
+                    設為房主
                   </button>
                   <button
                     type="button"
@@ -1182,13 +1183,11 @@ onBeforeUnmount(() => {
   --logout-top: 12%;
   --logout-right: 12%;
   --logout-width: 7%;
-  --logout-height: 6.8%;
   position: absolute;
   top: var(--logout-top);
   right: var(--logout-right);
   z-index: 20;
-  min-width: var(--logout-width);
-  min-height: var(--logout-height);
+  width: var(--logout-width);
   padding: 0.7vh 1vw;
 }
 
@@ -1394,22 +1393,32 @@ onBeforeUnmount(() => {
 .wood-btn,
 .lobby-action-skin,
 .top-logout-btn {
-  border: 0.08vw solid #cbd5e1;
-  border-radius: 0.55vw;
-  color: #ffffff;
+  --lobby-button-aspect-ratio: 668 / 330;
+  --lobby-button-text-offset-y: 1%;
+  border: 0;
+  border-radius: 0;
+  color: #3c2714;
   cursor: pointer;
+  display: inline-grid;
+  place-items: center;
   font-size: clamp(0.92rem, 1vw, 1.5rem);
   font-weight: 700;
   line-height: 1;
+  aspect-ratio: var(--lobby-button-aspect-ratio);
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
   transition: transform 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
-  box-shadow: 0 0.35vw 0.9vw rgba(15, 23, 42, 0.12);
+  box-shadow: none;
+  text-shadow: 0 0.05vw 0.08vw rgba(255, 245, 220, 0.55);
+  text-align: center;
+  text-indent: 0;
+  padding-block-start: var(--lobby-button-text-offset-y);
 }
 
 .wood-btn:hover:not(:disabled),
 .lobby-action-skin:hover:not(:disabled),
 .top-logout-btn:hover:not(:disabled) {
   transform: translateY(-0.25vh);
-  box-shadow: 0 0.6vw 1.25vw rgba(15, 23, 42, 0.16);
+  filter: brightness(1.06);
 }
 
 .wood-btn:disabled,
@@ -1420,34 +1429,28 @@ onBeforeUnmount(() => {
 }
 
 .wood-btn {
-  background: #2563eb;
-  border-color: #1d4ed8;
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
 }
 
 .utility-blue-btn {
-  background: #2563eb;
-  border-color: #1d4ed8;
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
 }
 
 .success-green-btn {
-  background: #16a34a;
-  border-color: #15803d;
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
 }
 
 .accent-purple-btn {
-  background: #7c3aed;
-  border-color: #6d28d9;
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
 }
 
 .danger-red-btn,
 .top-logout-btn {
-  background: #ef4444;
-  border-color: #dc2626;
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
 }
 
 .warning-orange-btn {
-  background: #f97316;
-  border-color: #ea580c;
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
 }
 
 .hall-board {
@@ -1503,14 +1506,18 @@ onBeforeUnmount(() => {
 
 .lobby-action-btn {
   width: 100%;
-  min-height: 8.6vh;
+  min-height: 0;
   padding: 0.7vh 1vw;
+  --lobby-button-text-offset-y: 8%;
+  padding-block-start: var(--lobby-button-text-offset-y);
+  
 }
 
 .visibility-toggle-btn {
-  min-height: 4.7vh;
   min-width: 14%;
+  min-height: 0;
   padding: 0.7vh 1vw;
+  padding-block-start: var(--lobby-button-text-offset-y);
   font-size: clamp(0.78rem, 0.9vw, 1.35rem);
 }
 
@@ -1632,20 +1639,40 @@ onBeforeUnmount(() => {
 }
 
 .seat-card-action {
+  /*
+  原本色塊按鈕基底，保留作為回退參考：
   border: 0.08vw solid #cbd5e1;
   border-radius: 999vw;
-  padding: 0.3vh 0.55vw;
   color: #ffffff;
+  */
+  --lobby-button-aspect-ratio: 668 / 330;
+  --lobby-button-text-offset-y: 1%;
+  width: clamp(3.6rem, 4.8vw, 7rem);
+  border: 0;
+  border-radius: 0;
+  padding: 0.3vh 0.55vw;
+  color: #3c2714;
+  display: inline-grid;
+  place-items: center;
+  aspect-ratio: var(--lobby-button-aspect-ratio);
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
   font-size: clamp(0.62rem, 0.7vw, 0.98rem);
   font-weight: 700;
   line-height: 1;
   cursor: pointer;
+  text-shadow: 0 0.05vw 0.08vw rgba(255, 245, 220, 0.55);
+  text-align: center;
+  padding-block-start: var(--lobby-button-text-offset-y);
   transition: transform 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
 }
 
 .seat-card-action:hover:not(:disabled) {
   transform: translateY(-0.1vh);
+  /*
+  原本色塊 hover 陰影，保留作為回退參考：
   box-shadow: 0 0.32vw 0.65vw rgba(15, 23, 42, 0.14);
+  */
+  filter: brightness(1.06);
 }
 
 .seat-card-action:disabled {
@@ -1654,18 +1681,32 @@ onBeforeUnmount(() => {
 }
 
 .seat-card-host-action {
+  
+  /* 原本轉讓房主色塊按鈕，保留作為回退參考： */
   background: #2563eb;
   border-color: #1d4ed8;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  color: #ffffff;
+  /* background: var(--lobby-button-image) center / 100% 100% no-repeat; */
 }
 
 .seat-card-kick-action {
+  
+  /* 原本踢出玩家色塊按鈕，保留作為回退參考： */
   background: #ef4444;
   border-color: #dc2626;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  color: #ffffff;
+  /* background: var(--lobby-button-image) center / 100% 100% no-repeat; */
 }
 
 .small-wood-btn {
-  min-height: 4.8vh;
+  width: clamp(7rem, 9.5vw, 13rem);
+  min-height: 0;
   padding: 0.7vh 1vw;
+  padding-block-start: var(--lobby-button-text-offset-y);
   font-size: clamp(0.9rem, 1vw, 1.5rem);
 }
 
@@ -1718,8 +1759,12 @@ onBeforeUnmount(() => {
 }
 
 .secondary {
+  /*
+  原本 modal 次要按鈕色塊樣式，保留作為回退參考：
   background: #f97316;
   border-color: #ea580c;
+  */
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
 }
 
 :deep(.action-buttons) {
@@ -1729,10 +1774,13 @@ onBeforeUnmount(() => {
 
 :deep(.action-btn) {
   min-width: 7.5vw;
-  min-height: 4.7vh;
+  min-height: 0;
+  aspect-ratio: 668 / 330;
   padding: 0.7vh 1vw;
+  padding-block-start: var(--lobby-button-text-offset-y);
   border-radius: 0.55vw;
   font-size: clamp(0.78rem, 0.9vw, 1.35rem);
+  --lobby-button-text-offset-y: 2%;
 }
 
 @media (max-aspect-ratio: 4 / 3) {

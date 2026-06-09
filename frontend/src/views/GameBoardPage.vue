@@ -16,6 +16,7 @@ const gameRoomBackground = `url("${gameRoomUrl}")`;
 
 const route = useRoute();
 const router = useRouter();
+const boardPageEl = ref(null);
 const roomId = ref(String(route.query.room || '449102'));
 const roomTitle = ref('娛樂房・4人');
 const isTestMode = computed(() => route.query.test === '1');
@@ -57,16 +58,14 @@ const gameEndReasonText = ref('');
 const finalRankings = ref([]);
 const playerNamesById = ref({});
 const playableCardIndexes = ref([]);
-const canDraw = computed(() => isMyTurn.value);
+const latestGameEvent = ref('');
 const canUseSkill = ref(false);
 const skillDisabledReason = ref('');
-const latestGameEvent = ref('');
 const seerPreviewCards = ref([]);
 const seerOrderCards = ref([]);
 const seerSelectedOrder = ref([]);
 const isSkillPreviewLoading = ref(false);
 const seerOrderTouched = ref(false);
-
 const myPlayerId = ref(null);
 const matchResults = ref([]);
 const playerCards = ref([
@@ -115,6 +114,18 @@ const selectedCard = computed(() => {
   };
 });
 
+const selectedCardIsPlayable = computed(() => (
+  selectedCardIndex.value !== null
+  && isMyTurn.value
+  && playableCardIndexes.value.includes(selectedCardIndex.value)
+));
+
+const canDrawCard = computed(() => isMyTurn.value);
+
+const canUseSkillAction = computed(() => (
+  Boolean(canUseSkill.value)
+));
+
 const canSubmitSeerOrder = computed(() => {
   const total = seerPreviewCards.value.length;
   const selected = seerSelectedOrder.value.length;
@@ -123,12 +134,10 @@ const canSubmitSeerOrder = computed(() => {
     return false;
   }
 
-  // 沒有手動排序過，可以直接用原本順序送出
   if (!seerOrderTouched.value) {
     return true;
   }
 
-  // 只要開始點牌排序，就必須選滿
   return selected === total;
 });
 
@@ -518,10 +527,10 @@ function connectGameSocket() {
       return;
     }
 
-      if (data.type === 'match_results') {
-        handleMatchResults(data.results || data.results);
-        return;
-      }
+    if (data.type === 'match_results') {
+      handleMatchResults(data.results || data.results);
+      return;
+    }
 
     if (['card_played', 'card_drawn', 'skill_used'].includes(data.type)) {
       console.log('Received game event:', data);
@@ -586,6 +595,10 @@ function sendGameSocketAction(payload) {
   }
 
   gameSocket.send(JSON.stringify(payload));
+}
+
+function canSelectCard(index) {
+  return isMyTurn.value && playableCardIndexes.value.includes(index);
 }
 
 function applyConsumerState(data) {
@@ -1121,6 +1134,20 @@ function returnToRoomForNextRound() {
   window.location.assign('/lobby');
 }
 
+function getCardDisabledReason(index) {
+  if (!isMyTurn.value) {
+    return '還沒輪到你，不能出牌';
+  }
+
+  if (!playableCardIndexes.value.includes(index)) {
+    return drawPenalty.value > 0
+      ? `目前累加抽牌中，請接 +2 / +4 或抽 ${drawPenalty.value} 張`
+      : '這張牌目前不能出';
+  }
+
+  return '';
+}
+
 function leaveCurrentGame() {
   if (!gameSocket || gameSocket.readyState !== WebSocket.OPEN) {
     return Promise.resolve(null);
@@ -1139,7 +1166,7 @@ function leaveCurrentGame() {
 }
 
 function handleCardClick(index) {
-  if (!isCardSelectable(index)) {
+  if (!canSelectCard(index)) {
     latestGameEvent.value = getCardDisabledReason(index);
     return;
   }
@@ -1156,7 +1183,12 @@ function handlePlayButton() {
     return;
   }
 
-  if (!isCardSelectable(selectedCard.value.index)) {
+  if (!isMyTurn.value) {
+    latestGameEvent.value = '還沒輪到你，不能出牌';
+    return;
+  }
+
+  if (!selectedCardIsPlayable.value) {
     latestGameEvent.value = getCardDisabledReason(selectedCard.value.index);
     selectedCardIndex.value = null;
     return;
@@ -1178,14 +1210,21 @@ function handlePlayButton() {
 
 function handleColorChoice(colorValue) {
   if (pendingColorAction.value === 'skill_painter') {
+    if (!canUseSkillAction.value) {
+      latestGameEvent.value = '目前不能使用技能';
+      closeColorPicker();
+      return;
+    }
+
     submitSkillAction({ new_color: colorValue });
     pendingColorAction.value = 'card';
     return;
   }
 
-  if (!selectedCard.value) {
+  if (!selectedCard.value || !selectedCardIsPlayable.value) {
     showColorPickerModal.value = false;
     pendingColorAction.value = 'card';
+    latestGameEvent.value = selectedCard.value ? '這張牌目前不能出' : latestGameEvent.value;
     return;
   }
 
@@ -1200,8 +1239,9 @@ function closeColorPicker() {
 }
 
 function handleTargetChoice(targetIndex) {
-  if (!selectedCard.value) {
+  if (!selectedCard.value || !selectedCardIsPlayable.value) {
     showTargetPickerModal.value = false;
+    latestGameEvent.value = selectedCard.value ? '這張牌目前不能出' : latestGameEvent.value;
     return;
   }
 
@@ -1224,7 +1264,10 @@ function closeTargetPicker() {
 }
 
 function handleReturnCardChoice(returnCardIndex) {
-  if (!selectedCard.value || pendingTargetIndex.value === null) {
+  if (!selectedCard.value || !selectedCardIsPlayable.value || pendingTargetIndex.value === null) {
+    latestGameEvent.value = selectedCard.value && !selectedCardIsPlayable.value
+      ? '這張牌目前不能出'
+      : latestGameEvent.value;
     closeReturnCardPicker();
     return;
   }
@@ -1233,7 +1276,6 @@ function handleReturnCardChoice(returnCardIndex) {
     returnCardIndex > selectedCard.value.index
       ? returnCardIndex - 1
       : returnCardIndex;
-
 
   submitGameAction('play_card', selectedCard.value, {
     target_player_index: pendingTargetIndex.value,
@@ -1247,8 +1289,8 @@ function closeReturnCardPicker() {
 }
 
 function handleDrawCard() {
-  if (!canDraw.value) {
-    latestGameEvent.value = isMyTurn.value ? '目前不能抽牌' : '還沒輪到你，不能抽牌';
+  if (!canDrawCard.value) {
+    latestGameEvent.value = '還沒輪到你，不能抽牌';
     return;
   }
 
@@ -1315,7 +1357,7 @@ function toggleSeerCardSelection(card) {
 }
 
 function submitSeerOrder() {
-  if (seerSelectedOrder.value.length !== seerPreviewCards.value.length) {
+  if (seerOrderTouched.value && seerSelectedOrder.value.length !== seerPreviewCards.value.length) {
     latestGameEvent.value = '已開始排序時，請依序選完全部牌才能送出';
     return;
   }
@@ -1323,7 +1365,6 @@ function submitSeerOrder() {
   const finalOrder = seerOrderTouched.value
     ? seerSelectedOrder.value
     : seerOrderCards.value.map((card) => card.originalIndex);
-
 
   submitSkillAction({
     new_order: finalOrder,
@@ -1374,30 +1415,22 @@ function handleUseSkill() {
   latestGameEvent.value = '目前角色沒有可使用的技能';
 }
 
-function isCardSelectable(index) {
-  return isMyTurn.value && playableCardIndexes.value.includes(index);
-}
-
-function getCardDisabledReason(index) {
-  if (!isMyTurn.value) {
-    return '還沒輪到你，不能出牌';
-  }
-
-  if (!playableCardIndexes.value.includes(index)) {
-    return drawPenalty.value > 0
-      ? `目前累加抽牌中，請接 +2 / +4 或抽 ${drawPenalty.value} 張`
-      : '這張牌目前不能出';
-  }
-
-  return '';
-}
-
 function handleSkillDiscardChoice(cardIndex) {
   submitSkillAction({ discard_card_index: cardIndex });
 }
 
 function closeSkillDiscardPicker() {
   showSkillDiscardPickerModal.value = false;
+}
+
+function readBoardCssNumber(variableName, fallback) {
+  if (!boardPageEl.value) {
+    return fallback;
+  }
+
+  const rawValue = getComputedStyle(boardPageEl.value).getPropertyValue(variableName).trim();
+  const parsed = Number.parseFloat(rawValue);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function handleForceSettlement() {
@@ -1413,15 +1446,24 @@ function handleForceSettlement() {
 function playerCardStyle(index) {
   const count = Math.max(playerCards.value.length, 1);
   const center = (count - 1) / 2;
-  const visibleCornerGap = 18;
-  const maxRotation = Math.max(46, 84 - Math.max(0, count - 8) * 3);
-  const minReadableStep = Math.max(4.8, 13 - Math.max(0, count - 8) * 0.7);
+  const visibleCornerGap = readBoardCssNumber('--hand-fan-corner-gap', 18);
+  const maxRotationFloor = readBoardCssNumber('--hand-fan-max-rotation-floor', 46);
+  const maxRotationStart = readBoardCssNumber('--hand-fan-max-rotation-start', 84);
+  const maxRotationDecay = readBoardCssNumber('--hand-fan-max-rotation-decay', 3);
+  const minReadableStepFloor = readBoardCssNumber('--hand-fan-min-step-floor', 4.8);
+  const minReadableStepStart = readBoardCssNumber('--hand-fan-min-step-start', 13);
+  const minReadableStepDecay = readBoardCssNumber('--hand-fan-min-step-decay', 0.7);
+  const fanStepCap = readBoardCssNumber('--hand-fan-step-cap', 16);
+  const sideDropMax = readBoardCssNumber('--hand-fan-side-drop', 28);
+  const extraCardCount = Math.max(0, count - 8);
+  const maxRotation = Math.max(maxRotationFloor, maxRotationStart - extraCardCount * maxRotationDecay);
+  const minReadableStep = Math.max(minReadableStepFloor, minReadableStepStart - extraCardCount * minReadableStepDecay);
   const fullFanStep = count <= 1 ? 0 : (maxRotation * 2) / (count - 1);
-  const step = count <= 1 ? 0 : Math.max(minReadableStep, Math.min(16, fullFanStep));
+  const step = count <= 1 ? 0 : Math.max(minReadableStep, Math.min(fanStepCap, fullFanStep));
   const angle = (index - center) * step;
   const offset = (index - center) * visibleCornerGap;
   const edgeRatio = Math.abs(index - center) / Math.max(center, 1);
-  const sideDrop = edgeRatio * 28;
+  const sideDrop = edgeRatio * sideDropMax;
 
   return {
     bottom: `${-sideDrop}px`,
@@ -1442,7 +1484,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="game-board-page">
+  <main ref="boardPageEl" class="game-board-page">
     <div class="game-board-stage">
     <div class="room-panel" aria-label="房間資訊">
       <div class="room-row">
@@ -1571,16 +1613,17 @@ onBeforeUnmount(() => {
           class="game-card player-card"
           :class="{
             'is-selected': selectedCardIndex === index,
-            'is-playable': playableCardIndexes.includes(index),
+            'is-playable': canSelectCard(index),
+            'is-disabled': !canSelectCard(index),
             'is-blocked-by-penalty': drawPenalty > 0 && !playableCardIndexes.includes(index),
             'image-fill': cardAssetUrl(card),
           }"
           :aria-pressed="selectedCardIndex === index"
           :data-selected="selectedCardIndex === index ? 'true' : 'false'"
           :style="{ ...playerCardStyle(index), ...cardImageStyle(card) }"
-          :disabled="!isCardSelectable(index)"
-          :title="getCardDisabledReason(index)"
           type="button"
+          :disabled="!canSelectCard(index)"
+          :title="getCardDisabledReason(index)"
           @click="handleCardClick(index)"
         >
           <span class="card-label">{{ displayCardLabel(card) }}</span>
@@ -1589,11 +1632,11 @@ onBeforeUnmount(() => {
     </section>
 
     <aside class="action-panel" aria-label="玩家操作">
-      <button class="action-btn" type="button" :disabled="!selectedCard || !isCardSelectable(selectedCard.index)" @click="handlePlayButton">
+      <button class="action-btn" type="button" :disabled="!selectedCard || !selectedCardIsPlayable" @click="handlePlayButton">
         {{ playButtonLabel }}
       </button>
-      <button class="action-btn" type="button" :disabled="!canDraw" @click="handleDrawCard">{{ drawButtonLabel }}</button>
-      <button class="action-btn" type="button" :disabled="!canUseSkill || isSkillPreviewLoading" :title="skillDisabledReason" @click="handleUseSkill">{{ skillButtonLabel }}</button>
+      <button class="action-btn" type="button" :disabled="!canDrawCard" @click="handleDrawCard">{{ drawButtonLabel }}</button>
+      <button class="action-btn" type="button" :disabled="!canUseSkillAction || isSkillPreviewLoading" :title="skillDisabledReason" @click="handleUseSkill">{{ skillButtonLabel }}</button>
     </aside>
     </div>
 
@@ -1740,7 +1783,7 @@ onBeforeUnmount(() => {
 
         <div class="seer-card-grid">
           <button
-            v-for="(card, index) in seerOrderCards"
+            v-for="card in seerOrderCards"
             :key="`seer-${card.originalIndex}-${card.displayName}`"
             class="seer-card-choice"
             :class="{ 'is-selected': seerSelectionNumber(card) }"
@@ -1801,23 +1844,122 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .game-board-page {
-  --card-width: 64px;
-  --card-height: 96px;
+  /* ===== 遊戲畫布基準 ===== */
+  --board-width: min(100vw, calc(100vh * 16 / 9));
+  --board-height: min(100vh, calc(100vw * 9 / 16));
+
+  /* ===== 可調 ratio 參數：之後優先改這一區 ===== */
+  --card-width-ratio: 0.062;
+  --font-xs-ratio: 0.05;
+  --font-sm-ratio: 0.05;
+  --font-md-ratio: 0.05;
+  --font-lg-ratio: 0.02;
+  --font-xl-ratio: 0.02;
+
+  --room-panel-top-ratio: 0.017;
+  --room-panel-left-ratio: 0.012;
+  --room-panel-width-ratio: 0.105;
+  --room-row-height-ratio: 0.035;
+  --room-panel-gap-ratio: 0.007;
+
+  --top-tools-top-ratio: 0.018;
+  --top-tools-right-ratio: 0.016;
+  --top-tools-gap-ratio: 0.006;
+  --tool-btn-width-ratio: 0.034;
+  --tool-btn-height-ratio: 0.065;
+
+  --opponent-top-y-ratio: 0.028;
+  --opponent-side-card-center-y-ratio: 0.54;
+  --opponent-side-offset-ratio: 0.014;
+  --opponent-side-width-ratio: 0.11;
+  --side-name-gap-ratio: 0.18;
+  --side-role-gap-ratio: 0.44;
+  --role-card-width-ratio: 1.22;
+  --opponent-top-column-gap-ratio: 0.009;
+  --opponent-gap-ratio: 0.004;
+  --role-panel-gap-ratio: 0.0055;
+
+  --table-center-y-ratio: 0.48;
+  --table-center-gap-ratio: 0.033;
+  --turn-panel-width-ratio: 0.16;
+
+  --player-area-width-ratio: 0.5;
+  --player-area-bottom-ratio: 0.15;
+  --player-area-height-ratio: 0.19;
+  --player-info-left-ratio: -0.15;
+  --player-info-bottom-ratio: -0.08;
+  --player-info-gap-ratio: 0.005;
+  --player-role-card-width-ratio: 1.22;
+
+  --action-panel-width-ratio: 0.085;
+  --action-panel-right-ratio: 0.014;
+  --action-panel-bottom-ratio: 0.055;
+
+  --hand-fan-corner-gap-ratio: 0.0105;
+  --hand-fan-side-drop-ratio: 0.031;
+  --hand-fan-max-rotation-start: 84;
+  --hand-fan-max-rotation-floor: 46;
+  --hand-fan-max-rotation-decay: 3;
+  --hand-fan-min-step-start: 13;
+  --hand-fan-min-step-floor: 4.8;
+  --hand-fan-min-step-decay: 0.7;
+  --hand-fan-step-cap: 16;
+
+  /* ===== 派生尺寸：一般不需要直接改 ===== */
+  --card-width: clamp(44px, calc(var(--board-width) * var(--card-width-ratio)), 108px);
+  --card-height: calc(var(--card-width) * 7 / 5);
+
+  --font-xs: clamp(7px, calc(var(--board-width) * var(--font-xs-ratio)), 12px);
+  --font-sm: clamp(8px, calc(var(--board-width) * var(--font-sm-ratio)), 14px);
+  --font-md: clamp(9px, calc(var(--board-width) * var(--font-md-ratio)), 16px);
+  --font-lg: clamp(11px, calc(var(--board-width) * var(--font-lg-ratio)), 20px);
+  --font-xl: clamp(13px, calc(var(--board-width) * var(--font-xl-ratio)), 25px);
+
+  --room-panel-top: calc(var(--board-height) * var(--room-panel-top-ratio));
+  --room-panel-left: calc(var(--board-width) * var(--room-panel-left-ratio));
+  --room-panel-width: calc(var(--board-width) * var(--room-panel-width-ratio));
+  --room-row-height: calc(var(--board-height) * var(--room-row-height-ratio));
+  --room-panel-gap: calc(var(--board-height) * var(--room-panel-gap-ratio));
+
+  --top-tools-top: calc(var(--board-height) * var(--top-tools-top-ratio));
+  --top-tools-right: calc(var(--board-width) * var(--top-tools-right-ratio));
+  --top-tools-gap: calc(var(--board-width) * var(--top-tools-gap-ratio));
+  --tool-btn-width: calc(var(--board-width) * var(--tool-btn-width-ratio));
+  --tool-btn-height: calc(var(--board-height) * var(--tool-btn-height-ratio));
+
+  --opponent-top-y: calc(var(--board-height) * var(--opponent-top-y-ratio));
+  --opponent-side-card-center-y: calc(var(--board-height) * var(--opponent-side-card-center-y-ratio));
+  --opponent-side-offset: calc(var(--board-width) * var(--opponent-side-offset-ratio));
+  --opponent-side-width: calc(var(--board-width) * var(--opponent-side-width-ratio));
+  --side-name-gap: calc(var(--card-width) * var(--side-name-gap-ratio));
+  --side-role-gap: calc(var(--card-width) * var(--side-role-gap-ratio));
+  --role-card-width: calc(var(--card-width) * var(--role-card-width-ratio));
+  --role-card-height: calc(var(--role-card-width) * 1771 / 1271);
+  --opponent-top-column-gap: calc(var(--board-width) * var(--opponent-top-column-gap-ratio));
+  --opponent-gap: calc(var(--board-height) * var(--opponent-gap-ratio));
+  --role-panel-gap: calc(var(--board-height) * var(--role-panel-gap-ratio));
+
+  --table-center-y: calc(var(--board-height) * var(--table-center-y-ratio));
+  --table-center-gap: calc(var(--board-width) * var(--table-center-gap-ratio));
+  --turn-panel-width: clamp(150px, calc(var(--board-width) * var(--turn-panel-width-ratio)), 265px);
+
+  --player-area-width: calc(var(--board-width) * var(--player-area-width-ratio));
+  --player-area-bottom: calc(var(--board-height) * var(--player-area-bottom-ratio));
+  --player-area-height: calc(var(--board-height) * var(--player-area-height-ratio));
+  --player-info-left: calc(var(--player-area-width) * var(--player-info-left-ratio));
+  --player-info-bottom: calc(var(--board-height) * var(--player-info-bottom-ratio));
+  --player-info-gap: calc(var(--board-height) * var(--player-info-gap-ratio));
+  --player-role-card-width: calc(var(--card-width) * var(--player-role-card-width-ratio));
+  --action-panel-width: calc(var(--board-width) * var(--action-panel-width-ratio));
+  --action-panel-right: calc(var(--board-width) * var(--action-panel-right-ratio));
+  --action-panel-bottom: calc(var(--board-height) * var(--action-panel-bottom-ratio));
+
+  --hand-fan-corner-gap: calc(var(--board-width) * var(--hand-fan-corner-gap-ratio));
+  --hand-fan-side-drop: calc(var(--board-height) * var(--hand-fan-side-drop-ratio));
+
   position: relative;
   width: 100vw;
   height: 100vh;
-  min-height: 100vh;
-  overflow: hidden;
-}
-
-.game-board-stage {
-  display: contents;
-}
-
-.game-board-page {
-  --card-width: 84px;
-  --card-height: calc(var(--card-width) * 7 / 5);
-  position: relative;
   min-height: 100vh;
   overflow: hidden;
   color: #f8fafc;
@@ -1827,6 +1969,15 @@ onBeforeUnmount(() => {
   background-position: center;
   background-size: cover;
   font-family: "Microsoft JhengHei", "PingFang TC", system-ui, sans-serif;
+}
+
+.game-board-stage {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--board-width);
+  height: var(--board-height);
+  transform: translate(-50%, -50%);
 }
 
 .room-panel,
@@ -1840,35 +1991,41 @@ onBeforeUnmount(() => {
 }
 
 .room-panel {
-  top: 18px;
-  left: 18px;
-  width: 202px;
+  top: var(--room-panel-top);
+  left: var(--room-panel-left);
+  width: var(--room-panel-width);
+  min-width: 110px;
   display: grid;
-  gap: 8px;
+  gap: var(--room-panel-gap);
 }
 
 .room-row {
-  min-height: 38px;
+  min-height: clamp(22px, var(--room-row-height), 38px);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 14px;
+  gap: 6px;
+  padding: 0 clamp(6px, calc(var(--board-width) * 0.007), 14px);
   border: 1px solid rgba(248, 250, 252, 0.88);
-  border-radius: 8px;
+  border-radius: clamp(4px, calc(var(--board-width) * 0.004), 8px);
   background: rgba(5, 2, 16, 0.72);
-  font-size: 15px;
+  font-size: var(--font-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .signal-icon {
+  flex: 0 0 auto;
   font-weight: 700;
   transform: rotate(-18deg);
 }
 
 .top-tools {
-  top: 20px;
-  right: 24px;
+  top: var(--top-tools-top);
+  right: var(--top-tools-right);
   display: flex;
-  gap: 12px;
+  gap: var(--top-tools-gap);
 }
 
 .tool-btn,
@@ -1878,36 +2035,36 @@ onBeforeUnmount(() => {
 }
 
 .tool-btn {
-  width: 66px;
-  height: 70px;
+  width: clamp(38px, var(--tool-btn-width), 70px);
+  height: clamp(42px, var(--tool-btn-height), 76px);
   display: grid;
   place-items: center;
   gap: 2px;
   border: 1px solid rgba(248, 250, 252, 0.9);
-  border-radius: 8px;
+  border-radius: clamp(4px, calc(var(--board-width) * 0.004), 8px);
   color: inherit;
   background: rgba(5, 2, 16, 0.68);
-  font-size: 13px;
+  font-size: var(--font-xs);
 }
 
 .tool-icon {
-  font-size: 24px;
+  font-size: var(--font-xl);
   line-height: 1;
 }
 
 .opponent {
   display: grid;
   justify-items: center;
-  gap: 5px;
+  gap: var(--opponent-gap);
 }
 
 .opponent-top {
-  top: 30px;
+  top: var(--opponent-top-y);
   left: 50%;
   transform: translateX(-50%);
-  grid-template-columns: 132px auto;
+  grid-template-columns: calc(var(--role-card-width) * 1.15) auto;
   grid-template-rows: repeat(3, auto);
-  column-gap: 18px;
+  column-gap: var(--opponent-top-column-gap);
   align-items: start;
 }
 
@@ -1915,31 +2072,61 @@ onBeforeUnmount(() => {
   grid-row: 1 / 4;
 }
 
+.opponent-left,
+.opponent-right {
+  top: var(--opponent-side-card-center-y);
+  width: var(--opponent-side-width);
+  height: calc(var(--role-card-height) + var(--card-width) + var(--card-height) * 0.35);
+  transform: translateY(-50%);
+}
+
 .opponent-left {
-  top: 124px;
-  left: 20px;
+  left: var(--opponent-side-offset);
 }
 
 .opponent-right {
-  top: 124px;
-  right: 20px;
+  right: var(--opponent-side-offset);
+}
+
+.opponent-left .role-panel,
+.opponent-right .role-panel {
+  position: absolute;
+  left: 50%;
+  top: calc(50% - (var(--card-width) / 2) - var(--role-card-height) - var(--side-role-gap));
+  transform: translateX(-50%);
+}
+
+.opponent-left > .opponent-name,
+.opponent-right > .opponent-name {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + (var(--card-width) / 2) + var(--side-name-gap));
+  transform: translateX(-50%);
+}
+
+.opponent-left .opponent-card-summary,
+.opponent-right .opponent-card-summary {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .role-panel {
   display: grid;
   justify-items: center;
-  gap: 6px;
+  gap: var(--role-panel-gap);
 }
 
 .role-card {
-  width: 110px;
-  height: calc(110px * 1771 / 1271);
+  width: var(--role-card-width);
+  height: var(--role-card-height);
   display: grid;
   place-items: center;
   border: 0;
   border-radius: 0;
   background: transparent;
-  font-size: 18px;
+  font-size: var(--font-md);
 }
 
 .image-fill {
@@ -1958,22 +2145,30 @@ onBeforeUnmount(() => {
 }
 
 .role-name {
-  min-width: 76px;
-  max-width: 116px;
-  padding: 4px 8px;
+  min-width: calc(var(--role-card-width) * 0.70);
+  max-width: calc(var(--role-card-width) * 1.08);
+  padding: calc(var(--board-height) * 0.004) calc(var(--board-width) * 0.004);
   border: 1px solid rgba(248, 250, 252, 0.86);
-  border-radius: 8px;
+  border-radius: clamp(4px, calc(var(--board-width) * 0.004), 8px);
   color: #f8fafc;
   background: rgba(5, 2, 16, 0.78);
-  font-size: 14px;
-  line-height: 1.2;
+  font-size: var(--font-xs);
+  line-height: 1.15;
   text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .opponent-name,
 .card-count {
-  font-size: 15px;
+  max-width: calc(var(--board-width) * 0.12);
+  font-size: var(--font-sm);
   line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
 }
 
 .opponent-card-summary {
@@ -1981,27 +2176,20 @@ onBeforeUnmount(() => {
   width: max-content;
 }
 
-.opponent-left .opponent-card-summary,
-.opponent-right .opponent-card-summary {
-  height: var(--card-height);
-  display: grid;
-  place-items: center;
-}
-
 .card-count-badge {
   position: absolute;
-  top: -10px;
-  right: -12px;
-  min-width: 28px;
-  height: 28px;
+  top: calc(var(--card-width) * -0.12);
+  right: calc(var(--card-width) * -0.15);
+  min-width: calc(var(--card-width) * 0.32);
+  height: calc(var(--card-width) * 0.32);
   display: grid;
   place-items: center;
-  padding: 0 6px;
+  padding: 0 calc(var(--card-width) * 0.06);
   border: 1px solid rgba(248, 250, 252, 0.95);
   border-radius: 999px;
   color: #080312;
   background: #f8fafc;
-  font-size: 15px;
+  font-size: var(--font-sm);
   font-weight: 800;
 }
 
@@ -2011,10 +2199,10 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   border: 1px solid rgba(248, 250, 252, 0.92);
-  border-radius: 7px;
+  border-radius: clamp(4px, calc(var(--board-width) * 0.004), 8px);
   color: #f8fafc;
   background-color: rgba(5, 2, 16, 0.72);
-  font-size: 15px;
+  font-size: var(--font-sm);
   text-align: center;
 }
 
@@ -2029,30 +2217,29 @@ onBeforeUnmount(() => {
 }
 
 .side-card-horizontal + .card-count-badge {
-  top: -12px;
-  right: -14px;
+  top: calc(var(--card-width) * -0.15);
+  right: calc(var(--card-width) * -0.18);
 }
 
 .table-center {
-  top: 28%;
+  top: var(--table-center-y);
   left: 50%;
-  width: min(680px, calc(100vw - 360px));
-  min-width: 520px;
-  height: 230px;
-  transform: translateX(-50%);
+  width: calc(var(--card-width) * 2 + var(--turn-panel-width) + var(--table-center-gap) * 2);
+  min-width: 0;
+  transform: translate(-50%, -50%);
   display: grid;
-  grid-template-columns: var(--card-width) 230px var(--card-width);
+  grid-template-columns: var(--card-width) var(--turn-panel-width) var(--card-width);
   grid-template-areas: "deck info discard";
-  align-items: start;
+  align-items: center;
   justify-content: center;
-  gap: 64px;
+  gap: var(--table-center-gap);
 }
 
 .deck-stack {
   grid-area: deck;
   position: relative;
   justify-self: end;
-  margin-top: 8px;
+  align-self: center;
 }
 
 .deck-card {
@@ -2067,7 +2254,7 @@ onBeforeUnmount(() => {
   width: var(--card-width);
   height: var(--card-height);
   justify-self: start;
-  margin-top: 8px;
+  align-self: center;
 }
 
 .pile-card {
@@ -2079,21 +2266,23 @@ onBeforeUnmount(() => {
 .turn-panel {
   grid-area: info;
   position: relative;
-  width: 230px;
+  width: var(--turn-panel-width);
   justify-self: center;
-  padding: 12px 14px;
+  padding: calc(var(--board-height) * 0.011) calc(var(--board-width) * 0.007);
   border: 1px solid rgba(248, 250, 252, 0.92);
-  border-radius: 8px;
+  border-radius: clamp(4px, calc(var(--board-width) * 0.004), 8px);
   background: rgba(5, 2, 16, 0.74);
 }
 
 .turn-row {
-  min-height: 30px;
+  min-height: clamp(18px, calc(var(--board-height) * 0.028), 32px);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: calc(var(--board-width) * 0.006);
   border-bottom: 1px solid rgba(248, 250, 252, 0.35);
-  font-size: 16px;
+  font-size: var(--font-md);
+  white-space: nowrap;
 }
 
 .turn-row:last-child {
@@ -2101,7 +2290,8 @@ onBeforeUnmount(() => {
 }
 
 .turn-row strong {
-  font-size: 20px;
+  flex: 0 0 auto;
+  font-size: var(--font-lg);
 }
 
 .penalty-row {
@@ -2113,25 +2303,25 @@ onBeforeUnmount(() => {
 }
 
 .penalty-hint {
-  padding: 7px 0 8px;
+  padding: calc(var(--board-height) * 0.006) 0 calc(var(--board-height) * 0.007);
   border-bottom: 1px solid rgba(248, 250, 252, 0.35);
   color: #fde68a;
-  font-size: 13px;
+  font-size: var(--font-xs);
   line-height: 1.3;
   text-align: right;
 }
 
 .event-hint {
-  padding-top: 8px;
+  padding-top: calc(var(--board-height) * 0.007);
   color: #bfdbfe;
-  font-size: 13px;
+  font-size: var(--font-xs);
   line-height: 1.35;
   text-align: right;
 }
 
 .color-dot {
-  width: 20px;
-  height: 20px;
+  width: calc(var(--font-lg) * 1.05);
+  height: calc(var(--font-lg) * 1.05);
   border: 1px solid rgba(248, 250, 252, 0.92);
   border-radius: 50%;
 }
@@ -2139,31 +2329,33 @@ onBeforeUnmount(() => {
 .current-color {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 18px;
+  gap: calc(var(--board-width) * 0.004);
+  font-size: var(--font-md);
 }
 
 .player-area {
   left: 50%;
-  width: 920px;
-  height: 198px;
+  width: var(--player-area-width);
+  height: var(--player-area-height);
   transform: translateX(-50%);
-  bottom: 88px;
+  bottom: var(--player-area-bottom);
   display: block;
 }
 
 .player-info {
+  --role-card-width: var(--player-role-card-width);
+  --role-card-height: calc(var(--role-card-width) * 1771 / 1271);
   position: absolute;
-  left: 0;
-  bottom: -18px;
+  left: var(--player-info-left);
+  bottom: var(--player-info-bottom);
   display: grid;
   justify-items: center;
-  gap: 6px;
+  gap: var(--player-info-gap);
 }
 
 .player-hand {
   position: relative;
-  height: 168px;
+  height: 100%;
 }
 
 .player-card {
@@ -2172,7 +2364,7 @@ onBeforeUnmount(() => {
   bottom: 0;
   width: var(--card-width);
   min-width: var(--card-width);
-  padding: 0 4px;
+  padding: 0 calc(var(--card-width) * 0.04);
   transform: translateX(calc(-50% + var(--fan-offset))) rotate(var(--rotation));
   transform-origin: center 140%;
   transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
@@ -2182,8 +2374,8 @@ onBeforeUnmount(() => {
 .player-card {
   align-items: start;
   justify-items: start;
-  padding: 8px 0 0 8px;
-  font-size: 16px;
+  padding: calc(var(--card-width) * 0.09) 0 0 calc(var(--card-width) * 0.09);
+  font-size: var(--font-md);
   font-weight: 800;
   line-height: 1;
 }
@@ -2212,7 +2404,7 @@ onBeforeUnmount(() => {
   border-color: #fde68a;
   background-color: rgba(30, 64, 175, 0.95);
   box-shadow: 0 0 0 3px rgba(253, 230, 138, 0.95), 0 14px 26px rgba(0, 0, 0, 0.42);
-  transform: translateX(calc(-50% + var(--fan-offset))) rotate(var(--rotation)) translateY(-30px) scale(1.04);
+  transform: translateX(calc(-50% + var(--fan-offset))) rotate(var(--rotation)) translateY(calc(var(--card-width) * -0.35)) scale(1.04);
 }
 
 .player-card.is-playable {
@@ -2224,26 +2416,35 @@ onBeforeUnmount(() => {
   opacity: 0.58;
 }
 
+.player-card:disabled,
+.player-card.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  filter: grayscale(0.45);
+}
+
 .player-card.is-selected.is-playable {
   border-color: #fde68a;
   box-shadow: 0 0 0 3px rgba(253, 230, 138, 0.95), 0 14px 26px rgba(0, 0, 0, 0.42);
 }
 
 .action-panel {
-  right: 20px;
-  bottom: 60px;
-  width: 160px;
+  right: var(--action-panel-right);
+  bottom: var(--action-panel-bottom);
+  width: var(--action-panel-width);
+  min-width: 92px;
   display: grid;
-  gap: 14px;
+  gap: calc(var(--board-height) * 0.013);
 }
 
 .action-btn {
-  height: 52px;
+  height: clamp(32px, calc(var(--board-height) * 0.048), 54px);
   border: 1px solid rgba(248, 250, 252, 0.92);
-  border-radius: 8px;
+  border-radius: clamp(4px, calc(var(--board-width) * 0.004), 8px);
   color: #f8fafc;
   background: rgba(5, 2, 16, 0.72);
-  font-size: 18px;
+  font-size: var(--font-md);
+  white-space: nowrap;
 }
 
 .action-btn:disabled {
@@ -2253,11 +2454,11 @@ onBeforeUnmount(() => {
 
 .tool-btn:hover,
 .action-btn:hover:not(:disabled),
-.player-card:hover {
+.player-card:hover:not(:disabled) {
   background-color: rgba(38, 28, 66, 0.9);
 }
 
-.player-card.is-selected:hover {
+.player-card.is-selected:hover:not(:disabled) {
   background-color: rgba(30, 64, 175, 0.95);
 }
 
@@ -2270,52 +2471,36 @@ onBeforeUnmount(() => {
   background: rgba(0, 0, 0, 0.42);
 }
 
-.settings-modal {
-  width: min(340px, calc(100vw - 32px));
+.settings-modal,
+.color-picker-modal,
+.target-picker-modal,
+.seer-order-modal,
+.game-over-modal {
+  width: min(560px, calc(100vw - 32px));
   display: grid;
-  gap: 18px;
+  gap: 16px;
   padding: 18px;
   border: 1px solid rgba(248, 250, 252, 0.8);
   border-radius: 8px;
   color: #f8fafc;
   background: rgba(8, 3, 18, 0.96);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.settings-modal {
+  width: min(340px, calc(100vw - 32px));
 }
 
 .color-picker-modal {
   width: min(360px, calc(100vw - 32px));
-  display: grid;
-  gap: 14px;
-  padding: 18px;
-  border: 1px solid rgba(248, 250, 252, 0.8);
-  border-radius: 8px;
-  color: #f8fafc;
-  background: rgba(8, 3, 18, 0.96);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
 }
 
 .target-picker-modal {
   width: min(380px, calc(100vw - 32px));
-  display: grid;
-  gap: 14px;
-  padding: 18px;
-  border: 1px solid rgba(248, 250, 252, 0.8);
-  border-radius: 8px;
-  color: #f8fafc;
-  background: rgba(8, 3, 18, 0.96);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
 }
 
 .seer-order-modal {
   width: min(620px, calc(100vw - 32px));
-  display: grid;
-  gap: 14px;
-  padding: 18px;
-  border: 1px solid rgba(248, 250, 252, 0.8);
-  border-radius: 8px;
-  color: #f8fafc;
-  background: rgba(8, 3, 18, 0.96);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
 }
 
 .seer-card-grid {
@@ -2386,18 +2571,6 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 
-.game-over-modal {
-  width: min(560px, calc(100vw - 32px));
-  display: grid;
-  gap: 16px;
-  padding: 20px;
-  border: 1px solid rgba(248, 250, 252, 0.86);
-  border-radius: 8px;
-  color: #f8fafc;
-  background: rgba(8, 3, 18, 0.96);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
-}
-
 .winner-title {
   min-height: 56px;
   display: grid;
@@ -2445,6 +2618,7 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+  width: 100%;
 }
 
 .game-over-exit,
@@ -2614,44 +2788,24 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-@media (max-width: 900px) {
+@media (max-aspect-ratio: 4 / 3) {
   .game-board-page {
-    min-height: 760px;
+    --room-panel-width-ratio: 0.13;
+    --opponent-side-offset-ratio: 0.006;
+    --opponent-side-width-ratio: 0.13;
+    --table-center-gap-ratio: 0.03;
+    --player-area-width-ratio: 0.60;
   }
+}
 
-  .room-panel {
-    width: 180px;
-  }
-
-  .opponent-top {
-    top: 112px;
-  }
-
-  .opponent-left,
-  .opponent-right {
-    display: none;
-  }
-
-  .table-center {
-    top: 280px;
-    width: calc(100vw - 40px);
-    min-width: 0;
-    grid-template-columns: var(--card-width) minmax(190px, 230px) var(--card-width);
-    gap: 24px;
-  }
-
-  .player-area {
-    width: calc(100vw - 28px);
-    grid-template-columns: 108px 1fr;
-    bottom: 110px;
-  }
-
-  .action-panel {
-    left: 14px;
-    right: 14px;
-    bottom: 24px;
-    width: auto;
-    grid-template-columns: repeat(3, 1fr);
+@media (max-width: 760px) {
+  .game-board-page {
+    --font-xs-ratio: 0.0050;
+    --font-sm-ratio: 0.0058;
+    --font-md-ratio: 0.0068;
+    --font-lg-ratio: 0.0084;
+    --turn-panel-width-ratio: 0.16;
+    --action-panel-width-ratio: 0.11;
   }
 }
 </style>

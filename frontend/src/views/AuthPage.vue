@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { notifySessionActivity } from '../sessionTimeout.js';
 import hallImage from '../assets/pictures/hall.jpg';
+import lobbyButtonImage from '../assets/pictures/lobbybutton.png';
 
 const API_BASE = '/api';
 const router = useRouter();
@@ -288,7 +289,7 @@ onMounted(async () => {
 <template>
   <main class="auth-page">
     <section class="auth-stage">
-      <div class="auth-board" :style="{ '--auth-board-image': `url(${hallImage})` }">
+      <div class="auth-board" :style="{ '--auth-board-image': `url(${hallImage})`, '--lobby-button-image': `url(${lobbyButtonImage})` }">
         <header class="auth-title-panel">
           <h1>{{ activePanelTitle }}</h1>
         </header>
@@ -331,13 +332,13 @@ onMounted(async () => {
 
               <div class="auth-action-row form-span">
                 <button type="button" class="auth-action-btn warning-orange-btn" @click="switchTab('forgot')">
-                  Forgot password
+                  忘記密碼
                 </button>
                 <button type="button" class="auth-action-btn accent-purple-btn" @click="switchTab('register')">
-                  Sign up
+                  註冊
                 </button>
                 <button class="auth-action-btn success-green-btn" :disabled="loading" type="submit">
-                  {{ loading ? 'Logging in...' : 'Login' }}
+                  {{ loading ? 'Logging in...' : '登入' }}
                 </button>
               </div>
             </form>
@@ -408,10 +409,10 @@ onMounted(async () => {
 
               <div class="auth-action-row form-span">
                 <button type="button" class="auth-action-btn utility-blue-btn" @click="switchTab('login')">
-                  Back to login
+                  返回登入
                 </button>
                 <button class="auth-action-btn accent-purple-btn" :disabled="loading" type="submit">
-                  {{ loading ? 'Submitting...' : 'Create account' }}
+                  {{ loading ? 'Submitting...' : '創建帳號' }}
                 </button>
               </div>
             </form>
@@ -429,7 +430,7 @@ onMounted(async () => {
 
               <div class="auth-action-row form-span">
                 <button type="button" class="auth-action-btn utility-blue-btn" @click="switchTab('login')">
-                  Back to login
+                  返回登入
                 </button>
                 <button class="auth-action-btn success-green-btn" :disabled="loading" type="submit">
                   {{ loading ? 'Verifying...' : 'Verify email' }}
@@ -449,10 +450,10 @@ onMounted(async () => {
 
               <div class="auth-action-row form-span">
                 <button type="button" class="auth-action-btn utility-blue-btn" @click="switchTab('login')">
-                  Back to login
+                  返回登入
                 </button>
                 <button class="auth-action-btn warning-orange-btn" :disabled="loading || !resetForm.email" type="submit">
-                  {{ loading ? 'Sending...' : 'Send reset link' }}
+                  {{ loading ? 'Sending...' : '發送重設連結' }}
                 </button>
               </div>
             </form>
@@ -518,7 +519,7 @@ onMounted(async () => {
 
               <div class="auth-action-row form-span">
                 <button type="button" class="auth-action-btn utility-blue-btn" @click="switchTab('login')">
-                  Back to login
+                  返回登入
                 </button>
                 <button class="auth-action-btn warning-orange-btn" :disabled="loading" type="submit">
                   {{ loading ? 'Resetting...' : 'Reset password' }}
@@ -580,30 +581,30 @@ onMounted(async () => {
 .auth-board {
   --board-safe-left: 11%;
   --board-safe-right: 11%;
-  --board-safe-top: 11%;
+  --board-safe-top: 10.8%;
   --board-safe-bottom: 1%;
   --title-left: 25%;
   --title-width: 50%;
   --title-height: 10%;
-  --workspace-top: 21%;
+  --workspace-top: 20%;
   --workspace-height: 68%;
-  --workspace-padding-y: 1.4%;
+  --workspace-padding-y: 1%;
   --workspace-padding-x: 3.2%;
   --workspace-radius: 1%;
-  --workspace-gap: 1.8%;
+  --workspace-gap: 1.2%;
   --notice-padding-y: 0.95%;
   --notice-padding-x: 1.3%;
   --form-column-gap: 2.4%;
   --form-row-gap: 1.7vh;
   --field-label-width: 25%;
-  --field-min-height: 8.1vh;
+  --field-min-height: 7.8vh;
   --field-radius: 0.75vw;
   --field-font-size: clamp(0.94rem, 1vw, 1.35rem);
   --label-font-size: clamp(1rem, 1.45vw, 2.2rem);
   --title-font-size: clamp(1.8rem, 3.35vw, 4.2rem);
   --action-gap: 0.9vw;
   --action-button-min-width: 10.4vw;
-  --action-button-min-height: 6vh;
+  --action-button-aspect-ratio: 668 / 330;
   --action-button-font-size: clamp(0.84rem, 0.92vw, 1.2rem);
   --password-icon-size: 1.65vw;
   --success-card-gap: 1vw;
@@ -673,20 +674,28 @@ onMounted(async () => {
 }
 
 .auth-action-btn {
-  border: 0.08vw solid #cbd5e1;
-  border-radius: 0.55vw;
-  color: #ffffff;
+  --lobby-button-text-offset-y: 2%;
+  border: 0;
+  border-radius: 0;
+  color: #3c2714;
   cursor: pointer;
+  display: inline-grid;
+  place-items: center;
   font-size: clamp(0.92rem, 1vw, 1.45rem);
   font-weight: 700;
   line-height: 1;
+  aspect-ratio: var(--action-button-aspect-ratio);
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
   transition: transform 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
-  box-shadow: 0 0.35vw 0.9vw rgba(15, 23, 42, 0.12);
+  box-shadow: none;
+  text-shadow: 0 0.05vw 0.08vw rgba(255, 245, 220, 0.55);
+  text-align: center;
+  padding-block-start: var(--lobby-button-text-offset-y);
 }
 
 .auth-action-btn:hover:not(:disabled) {
   transform: translateY(-0.25vh);
-  box-shadow: 0 0.6vw 1.25vw rgba(15, 23, 42, 0.16);
+  filter: brightness(1.06);
 }
 
 .auth-action-btn:disabled {
@@ -695,28 +704,23 @@ onMounted(async () => {
 }
 
 .utility-blue-btn {
-  background: #2563eb;
-  border-color: #1d4ed8;
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
 }
 
 .success-green-btn {
-  background: #16a34a;
-  border-color: #15803d;
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
 }
 
 .accent-purple-btn {
-  background: #7c3aed;
-  border-color: #6d28d9;
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
 }
 
 .warning-orange-btn {
-  background: #f97316;
-  border-color: #ea580c;
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
 }
 
 .danger-red-btn {
-  background: #ef4444;
-  border-color: #dc2626;
+  background: var(--lobby-button-image) center / 100% 100% no-repeat;
 }
 
 .auth-notice {
@@ -843,9 +847,10 @@ onMounted(async () => {
 }
 
 .auth-action-btn {
-  min-width: var(--action-button-min-width);
-  min-height: var(--action-button-min-height);
+  width: var(--action-button-min-width);
+  min-height: 0;
   padding: 0.8vh 1.2vw;
+  padding-block-start: var(--lobby-button-text-offset-y);
   font-size: var(--action-button-font-size);
 }
 
