@@ -4,8 +4,7 @@ from django.core.management.base import BaseCommand
 from django.db import close_old_connections
 
 from game.models import MatchmakingTicket
-from game.views import _try_complete_matchmaking
-
+from game.views import _matchmaking_service
 
 class Command(BaseCommand):
     help = 'Runs the matchmaking queue worker.'
@@ -58,7 +57,7 @@ class Command(BaseCommand):
             f'source_room={ticket.source_room.code if ticket.source_room_id else None}'
         )
 
-        room = _try_complete_matchmaking(ticket.user)
+        room = _matchmaking_service().try_complete_matchmaking(ticket.user)
 
         if room is None:
             self.stdout.write(
