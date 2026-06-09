@@ -28,6 +28,7 @@ const roomBusy = ref(false);
 const errorMessage = ref('');
 const showStatsPanel = ref(false);
 const showVisibilityCooldownNotice = ref(false);
+const showMatchmakingReadyLockedToast = ref(false);
 const matchmakingTicket = ref(null);
 const matchmakingTick = ref(0);
 let roomSocket = null;
@@ -39,6 +40,7 @@ let matchmakingTimerId = null;
 let matchmakingStatusPollId = null;
 let matchmakingReconnectTimerId = null;
 let visibilityCooldownNoticeTimerId = null;
+let matchmakingReadyLockedNoticeTimerId = null;
 let suppressBeforeUnloadWarning = false;
 
 const currentMember = computed(() => {
@@ -86,6 +88,7 @@ const canManageRoomMembers = computed(() => (
   Boolean(currentRoom.value)
   && isCurrentUserHost.value
   && currentRoom.value.status !== 'Playing'
+  && !currentRoom.value.is_matchmaking
 ));
 
 const visiblePublicRooms = computed(() => publicRooms.value.slice(0, 6));
@@ -345,6 +348,16 @@ function handleMatchmakingMessage(rawData) {
     return;
   }
 
+  if (data.type === 'cancelled' || data.type === 'idle') {
+    setMatchmakingTicket(null);
+
+    if (data.room) {
+      setRoom(data.room);
+    }
+
+    return;
+  }
+
   if (data.room) {
     setRoom(data.room);
 
@@ -356,10 +369,6 @@ function handleMatchmakingMessage(rawData) {
     }
 
     return;
-  }
-
-  if (data.type === 'cancelled' || data.type === 'idle') {
-    setMatchmakingTicket(null);
   }
 }
 
@@ -608,6 +617,30 @@ function shouldWarnBeforeLeavingLobby() {
   return !suppressBeforeUnloadWarning && Boolean(currentRoom.value || matchmakingTicket.value);
 }
 
+function leaveRoomOnPageUnload() {
+  const roomCode = currentRoom.value?.code;
+  if (!roomCode || currentRoom.value?.status === 'Playing') {
+    return;
+  }
+
+  const url = `${API_BASE}/rooms/${roomCode}/leave/`;
+  const payload = JSON.stringify({ reason: 'page_unload' });
+
+  if (navigator.sendBeacon) {
+    const blob = new Blob([payload], { type: 'application/json' });
+    navigator.sendBeacon(url, blob);
+    return;
+  }
+
+  fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload,
+    keepalive: true,
+  }).catch(() => {});
+}
+
 function handleLobbyBeforeUnload(event) {
   if (!shouldWarnBeforeLeavingLobby()) {
     return;
@@ -694,8 +727,30 @@ async function joinRoom() {
   }
 }
 
+function showMatchmakingReadyLockedNotice() {
+  showMatchmakingReadyLockedToast.value = false;
+
+  if (matchmakingReadyLockedNoticeTimerId) {
+    window.clearTimeout(matchmakingReadyLockedNoticeTimerId);
+    matchmakingReadyLockedNoticeTimerId = null;
+  }
+
+  window.requestAnimationFrame(() => {
+    showMatchmakingReadyLockedToast.value = true;
+    matchmakingReadyLockedNoticeTimerId = window.setTimeout(() => {
+      showMatchmakingReadyLockedToast.value = false;
+      matchmakingReadyLockedNoticeTimerId = null;
+    }, 1800);
+  });
+}
+
 async function toggleReady() {
   if (!currentRoom.value || !currentMember.value) {
+    return;
+  }
+
+  if (currentRoom.value.is_matchmaking) {
+    showMatchmakingReadyLockedNotice();
     return;
   }
 
@@ -906,6 +961,10 @@ async function cancelMatchmaking() {
       body: JSON.stringify({}),
     });
     handleMatchmakingMessage({ type: 'cancelled', ...data });
+    if (data.room) {
+      setRoom(data.room);
+    }
+    await loadPublicRooms();
   } catch (err) {
     errorMessage.value = err.message;
   } finally {
@@ -935,6 +994,7 @@ function toggleStatsPanel() {
 
 onMounted(async () => {
   window.addEventListener('beforeunload', handleLobbyBeforeUnload);
+  window.addEventListener('pagehide', leaveRoomOnPageUnload);
   startUiTicker();
   try {
     const data = await request('/auth/me/');
@@ -953,9 +1013,14 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleLobbyBeforeUnload);
+  window.removeEventListener('pagehide', leaveRoomOnPageUnload);
   if (visibilityCooldownNoticeTimerId) {
     window.clearTimeout(visibilityCooldownNoticeTimerId);
     visibilityCooldownNoticeTimerId = null;
+  }
+  if (matchmakingReadyLockedNoticeTimerId) {
+    window.clearTimeout(matchmakingReadyLockedNoticeTimerId);
+    matchmakingReadyLockedNoticeTimerId = null;
   }
   stopLobbyPolling();
   stopPublicRoomsPolling();
@@ -982,6 +1047,11 @@ onBeforeUnmount(() => {
         <transition name="cooldown-notice">
           <p v-if="showVisibilityCooldownNotice" class="visibility-cooldown-notice">
             {{ roomVisibilityCooldownRemaining }} 秒後才能再次切換
+          </p>
+        </transition>
+        <transition name="cooldown-notice">
+          <p v-if="showMatchmakingReadyLockedToast" class="visibility-cooldown-notice">
+            配對中不能取消準備
           </p>
         </transition>
 
@@ -1052,10 +1122,13 @@ onBeforeUnmount(() => {
               :can-start="!!currentRoom.can_start"
               :is-playing="currentRoom.status === 'Playing'"
               :is-host="!!currentMember?.is_host"
+              :is-matchmaking="!!currentRoom.is_matchmaking"
               :start-label="roomStartLabel"
               @toggle-ready="toggleReady"
+              @matchmaking-ready-locked="showMatchmakingReadyLockedNotice"
               @start-game="startGame"
               @test-start="startTestGame"
+              @cancel-matchmaking="cancelMatchmaking"
               @leave-room="leaveRoom"
               @return-game="returnToGame"
             />

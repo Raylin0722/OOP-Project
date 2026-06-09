@@ -103,6 +103,38 @@ def _sync_room_status(room):
         room.save(update_fields=['status'])
 
 
+def _broadcast_cancelled_matchmaking_tickets(tickets, room=None):
+    for ticket in tickets:
+        _broadcast_matchmaking_update(ticket.user_id, {
+            'type': 'cancelled',
+            'ticket': None,
+            'room': _room_payload(room, ticket.user) if room is not None else None,
+        })
+
+
+def _cancel_room_matchmaking(room):
+    tickets = list(
+        MatchmakingTicket.objects
+        .select_related('user')
+        .filter(
+            source_room=room,
+            status=MatchmakingTicket.Status.WAITING,
+        )
+    )
+    if not tickets:
+        return []
+
+    ticket_ids = [ticket.id for ticket in tickets]
+    MatchmakingTicket.objects.filter(id__in=ticket_ids).update(
+        status=MatchmakingTicket.Status.CANCELLED,
+    )
+
+    # 配對取消後回到房間等待狀態；非房主需重新確認準備，避免房主誤觸後立刻再次配對。
+    RoomMember.objects.filter(room=room).exclude(user_id=room.host_id).update(is_ready=False)
+    _sync_room_status(room)
+    return tickets
+
+
 def _game_reconnect_status(room, user):
     status = {
         'can_return': room.status == Room.Status.PLAYING,
@@ -232,10 +264,12 @@ def _cleanup_user_presence(user):
         return []
 
     affected_room_codes = []
+    cancelled_room_tickets = []
 
     MatchmakingTicket.objects.filter(
         user=user,
         status=MatchmakingTicket.Status.WAITING,
+        source_room__isnull=True,
     ).update(status=MatchmakingTicket.Status.CANCELLED)
 
     memberships = list(
@@ -257,6 +291,10 @@ def _cleanup_user_presence(user):
             room = Room.objects.select_for_update().filter(pk=room.pk).first()
             if room is None:
                 continue
+
+            room_cancelled_tickets = _cancel_room_matchmaking(room)
+            if room_cancelled_tickets:
+                cancelled_room_tickets.extend((room_code, ticket) for ticket in room_cancelled_tickets)
 
             RoomMember.objects.filter(pk=membership.pk).delete()
             human_members = list(
@@ -288,6 +326,14 @@ def _cleanup_user_presence(user):
         refreshed_room = Room.objects.filter(code=room_code).first()
         if refreshed_room is not None:
             _broadcast_room_update(refreshed_room)
+
+    for room_code, ticket in cancelled_room_tickets:
+        refreshed_room = Room.objects.filter(code=room_code).first()
+        _broadcast_matchmaking_update(ticket.user_id, {
+            'type': 'cancelled',
+            'ticket': None,
+            'room': _room_payload(refreshed_room, ticket.user) if refreshed_room is not None else None,
+        })
 
     if user.id:
         _broadcast_matchmaking_update(user.id, {'type': 'cancelled', 'ticket': None})
@@ -1160,6 +1206,9 @@ def set_room_ready(request, code):
     if membership is None:
         return _error('you are not in this room.', status=403, code='not_room_member')
 
+    if room.source_matchmaking_tickets.filter(status=MatchmakingTicket.Status.WAITING).exists():
+        return _error('matchmaking is in progress; ready state cannot be changed.', status=409, code='room_matchmaking')
+
     membership.is_ready = bool(data.get('is_ready', not membership.is_ready))
     membership.save(update_fields=['is_ready'])
     _broadcast_room_update(room)
@@ -1181,26 +1230,46 @@ def leave_room(request, code):
     if membership is None:
         return JsonResponse({'room': None})
 
+    cancelled_room_tickets = []
+    room_deleted = False
+
     with transaction.atomic():
+        room = Room.objects.select_for_update().get(pk=room.pk)
+        membership = RoomMember.objects.select_for_update().filter(room=room, user=request.user).first()
+        if membership is None:
+            return JsonResponse({'room': None})
+
+        cancelled_room_tickets = _cancel_room_matchmaking(room)
+
         membership.delete()
         remaining = list(room.members.order_by('joined_at', 'id'))
         if not remaining:
-            code = room.code
             room.delete()
-            _broadcast_room_deleted(code)
-            return JsonResponse({'room': None})
-        if room.host_id == request.user.id:
-            next_host_member = next((member for member in remaining if member.user_id is not None), None)
-            if next_host_member is None:
-                code = room.code
-                room.delete()
-                _broadcast_room_deleted(code)
-                return JsonResponse({'room': None})
-            room.host = next_host_member.user
-            room.save(update_fields=['host'])
-        _sync_room_status(room)
+            room_deleted = True
+        else:
+            if room.host_id == request.user.id:
+                next_host_member = next((member for member in remaining if member.user_id is not None), None)
+                if next_host_member is None:
+                    room.delete()
+                    room_deleted = True
+                else:
+                    room.host = next_host_member.user
+                    room.save(update_fields=['host'])
+            if not room_deleted:
+                _sync_room_status(room)
 
-    _broadcast_room_update(room)
+    if room_deleted:
+        _broadcast_room_deleted(code)
+        _broadcast_cancelled_matchmaking_tickets(cancelled_room_tickets)
+        return JsonResponse({'room': None})
+
+    refreshed_room = Room.objects.filter(code=code).first()
+    if refreshed_room is not None:
+        _broadcast_room_update(refreshed_room)
+        _broadcast_cancelled_matchmaking_tickets(cancelled_room_tickets, refreshed_room)
+    else:
+        _broadcast_cancelled_matchmaking_tickets(cancelled_room_tickets)
+
     return JsonResponse({'room': None})
 
 
@@ -1225,12 +1294,22 @@ def kick_room_member(request, code):
     if user_id == request.user.id:
         return _error('host cannot kick themselves.', code='cannot_kick_self')
 
-    deleted, _ = room.members.filter(user_id=user_id).delete()
-    if not deleted:
-        return _error('player is not in this room.', status=404, code='member_not_found')
-    _sync_room_status(room)
-    _broadcast_room_update(room)
-    return JsonResponse({'room': _room_payload(room, request.user)})
+    cancelled_room_tickets = []
+    with transaction.atomic():
+        room = Room.objects.select_for_update().get(pk=room.pk)
+        cancelled_room_tickets = _cancel_room_matchmaking(room)
+        deleted, _ = room.members.filter(user_id=user_id).delete()
+        if not deleted:
+            return _error('player is not in this room.', status=404, code='member_not_found')
+        _sync_room_status(room)
+
+    refreshed_room = Room.objects.filter(code=code).first()
+    if refreshed_room is not None:
+        _broadcast_room_update(refreshed_room)
+        _broadcast_cancelled_matchmaking_tickets(cancelled_room_tickets, refreshed_room)
+    else:
+        _broadcast_cancelled_matchmaking_tickets(cancelled_room_tickets)
+    return JsonResponse({'room': _room_payload(refreshed_room, request.user) if refreshed_room is not None else None})
 
 
 @csrf_exempt
@@ -1379,15 +1458,67 @@ def cancel_matchmaking(request):
     if login_error:
         return login_error
 
-    MatchmakingTicket.objects.filter(
-        user=request.user,
-        status=MatchmakingTicket.Status.WAITING,
-    ).update(status=MatchmakingTicket.Status.CANCELLED)
-    _broadcast_matchmaking_update(request.user.id, {
-        'type': 'cancelled',
+    cancelled_tickets = []
+    cancelled_room = None
+
+    with transaction.atomic():
+        ticket = (
+            MatchmakingTicket.objects
+            .select_for_update()
+            .select_related('source_room', 'user')
+            .filter(
+                user=request.user,
+                status=MatchmakingTicket.Status.WAITING,
+            )
+            .first()
+        )
+
+        if ticket and ticket.source_room_id:
+            room = Room.objects.select_for_update().filter(pk=ticket.source_room_id).first()
+            if room is None:
+                ticket.status = MatchmakingTicket.Status.CANCELLED
+                ticket.save(update_fields=['status'])
+                cancelled_tickets = [ticket]
+            elif room.host_id != request.user.id:
+                return _error('only the host can cancel room matchmaking.', status=403, code='host_required')
+            else:
+                cancelled_room = room
+                cancelled_tickets = _cancel_room_matchmaking(room)
+        else:
+            solo_tickets = list(
+                MatchmakingTicket.objects
+                .select_for_update()
+                .select_related('user')
+                .filter(
+                    user=request.user,
+                    status=MatchmakingTicket.Status.WAITING,
+                    source_room__isnull=True,
+                )
+            )
+            ticket_ids = [solo_ticket.id for solo_ticket in solo_tickets]
+            if ticket_ids:
+                MatchmakingTicket.objects.filter(id__in=ticket_ids).update(
+                    status=MatchmakingTicket.Status.CANCELLED,
+                )
+            cancelled_tickets = solo_tickets
+
+    if cancelled_room is not None:
+        cancelled_room = Room.objects.filter(pk=cancelled_room.pk).first()
+        if cancelled_room is not None:
+            _broadcast_room_update(cancelled_room)
+
+    _broadcast_cancelled_matchmaking_tickets(cancelled_tickets, cancelled_room)
+
+    if not cancelled_tickets:
+        _broadcast_matchmaking_update(request.user.id, {
+            'type': 'cancelled',
+            'ticket': None,
+        })
+
+    return JsonResponse({
         'ticket': None,
+        'room': _room_payload(cancelled_room, request.user) if cancelled_room is not None else None,
     })
-    return JsonResponse({'ticket': None})
 
 
 @require_http_methods(['GET'])

@@ -44,6 +44,7 @@ defineEmits([
   'return-game',
   'join-matchmaking',
   'cancel-matchmaking',
+  'matchmaking-ready-locked',
 ]);
 </script>
 
@@ -53,11 +54,30 @@ defineEmits([
       <button v-if="isPlaying" class="action-btn return-btn" :disabled="busy" @click="$emit('return-game')">
         返回遊戲
       </button>
-      <button v-if="!isPlaying && !isHost" class="action-btn ready-btn" :disabled="busy" @click="$emit('toggle-ready')">
-        {{ isReady ? '取消準備' : '準備' }}
+      <button
+        v-if="!isPlaying && !isHost"
+        class="action-btn ready-btn"
+        :class="{ 'locked-ready-btn': isMatchmaking }"
+        :disabled="busy"
+        @click="isMatchmaking ? $emit('matchmaking-ready-locked') : $emit('toggle-ready')"
+      >
+        {{ isMatchmaking ? '配對中' : (isReady ? '取消準備' : '準備') }}
       </button>
-      <button v-if="!isPlaying" class="action-btn start-btn" :disabled="busy || !canStart" @click="$emit('start-game')">
+      <button
+        v-if="!isPlaying && !(isHost && isMatchmaking)"
+        class="action-btn start-btn"
+        :disabled="busy || !canStart"
+        @click="$emit('start-game')"
+      >
         {{ startLabel }}
+      </button>
+      <button
+        v-if="!isPlaying && isHost && isMatchmaking"
+        class="action-btn matchmaking-cancel-btn"
+        :disabled="busy"
+        @click="$emit('cancel-matchmaking')"
+      >
+        取消配對
       </button>
       <button v-if="!isPlaying" class="action-btn test-btn" :disabled="busy" @click="$emit('test-start')">
         測試進入
@@ -141,6 +161,10 @@ defineEmits([
 
 .ready-btn {
   background: var(--lobby-button-image, url("../assets/pictures/lobbybutton.png")) center / 100% 100% no-repeat;
+}
+
+.locked-ready-btn {
+  opacity: 0.72;
 }
 
 .start-btn,
