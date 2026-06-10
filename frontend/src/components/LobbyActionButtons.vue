@@ -39,7 +39,6 @@ defineEmits([
   'join-room',
   'toggle-ready',
   'start-game',
-  'test-start',
   'leave-room',
   'return-game',
   'join-matchmaking',
@@ -78,9 +77,6 @@ defineEmits([
         @click="$emit('cancel-matchmaking')"
       >
         取消配對
-      </button>
-      <button v-if="!isPlaying" class="action-btn test-btn" :disabled="busy" @click="$emit('test-start')">
-        測試進入
       </button>
       <button class="action-btn leave-btn" :disabled="busy" @click="$emit('leave-room')">
         離開房間
@@ -169,10 +165,6 @@ defineEmits([
 
 .start-btn,
 .matchmaking-btn {
-  background: var(--lobby-button-image, url("../assets/pictures/lobbybutton.png")) center / 100% 100% no-repeat;
-}
-
-.test-btn {
   background: var(--lobby-button-image, url("../assets/pictures/lobbybutton.png")) center / 100% 100% no-repeat;
 }
 

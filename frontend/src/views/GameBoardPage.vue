@@ -22,7 +22,6 @@ const roomTitle = ref('娛樂房・4人');
 const isTestMode = computed(() => route.query.test === '1');
 const selectedCardIndex = ref(null);
 const remainingSeconds = ref(TURN_SECONDS);
-const showSettingsModal = ref(false);
 const showColorPickerModal = ref(false);
 const showTargetPickerModal = ref(false);
 const showReturnCardPickerModal = ref(false);
@@ -578,16 +577,6 @@ function closeGameSocket() {
     gameSocket.close();
     gameSocket = null;
   }
-}
-
-function openDebugPage() {
-  if (!isTestMode.value) {
-    return;
-  }
-
-  const debugUrl = new URL('/game-debug', window.location.origin);
-  debugUrl.searchParams.set('room', roomId.value);
-  window.open(debugUrl.toString(), '_blank', 'noopener,noreferrer');
 }
 
 function sendGameSocketAction(payload) {
@@ -1502,16 +1491,6 @@ function readBoardCssNumber(variableName, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function handleForceSettlement() {
-  if (!window.confirm('確定要強制結算目前這局嗎？')) {
-    return;
-  }
-
-  sendGameSocketAction({ action: 'force_settlement' });
-  latestGameEvent.value = '已送出強制結算請求';
-  showSettingsModal.value = false;
-}
-
 function playerCardStyle(index) {
   const count = Math.max(playerCards.value.length, 1);
   const center = (count - 1) / 2;
@@ -1568,14 +1547,6 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="top-tools" aria-label="遊戲工具">
-      <button v-if="isTestMode" class="tool-btn debug-btn" type="button" @click.stop="openDebugPage">
-        <span class="tool-icon">◫</span>
-        <span>監測</span>
-      </button>
-      <button class="tool-btn" type="button" @click.stop="showSettingsModal = true">
-        <span class="tool-icon">⚙</span>
-        <span>設定</span>
-      </button>
       <button class="tool-btn" type="button" @click.stop="handleExitRoom">
         <span class="tool-icon">↪</span>
         <span>退出</span>
@@ -1711,26 +1682,6 @@ onBeforeUnmount(() => {
       <button class="action-btn" type="button" :disabled="!canDrawCard" @click="handleDrawCard">{{ drawButtonLabel }}</button>
       <button class="action-btn" type="button" :disabled="!canUseSkillAction || isSkillPreviewLoading" :title="skillDisabledReason" @click="handleUseSkill">{{ skillButtonLabel }}</button>
     </aside>
-    </div>
-
-    <div v-if="showSettingsModal" class="settings-backdrop" @click.self="showSettingsModal = false">
-      <section class="settings-modal" aria-label="設定">
-        <header class="settings-header">
-          <h2>設定</h2>
-          <button class="settings-close" type="button" @click="showSettingsModal = false">×</button>
-        </header>
-
-        <label class="scale-field">
-          <span>縮放比例</span>
-          <input v-model.number="boardScale" type="number" min="0.5" max="1.4" step="0.05" />
-        </label>
-
-        <input v-model.number="boardScale" class="scale-slider" type="range" min="0.5" max="1.4" step="0.05" />
-
-        <button class="danger-action-btn" type="button" @click="handleForceSettlement">
-          強制結算
-        </button>
-      </section>
     </div>
 
     <div v-if="showColorPickerModal" class="settings-backdrop" @click.self="closeColorPicker">
@@ -2544,7 +2495,6 @@ onBeforeUnmount(() => {
   background: rgba(0, 0, 0, 0.42);
 }
 
-.settings-modal,
 .color-picker-modal,
 .target-picker-modal,
 .seer-order-modal,
@@ -2558,10 +2508,6 @@ onBeforeUnmount(() => {
   color: #f8fafc;
   background: rgba(8, 3, 18, 0.96);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
-}
-
-.settings-modal {
-  width: min(340px, calc(100vw - 32px));
 }
 
 .color-picker-modal {

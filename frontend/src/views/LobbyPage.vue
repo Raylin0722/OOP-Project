@@ -921,33 +921,6 @@ async function startGame() {
   }
 }
 
-async function startTestGame() {
-  if (!currentRoom.value) {
-    return;
-  }
-
-  roomBusy.value = true;
-  errorMessage.value = '';
-  try {
-    const data = await request(`/rooms/${currentRoom.value.code}/start/`, {
-      method: 'POST',
-      body: JSON.stringify({ test_mode: true }),
-    });
-    setRoom(data.room);
-    router.push({
-      path: '/game-ui',
-      query: {
-        room: data.room.code,
-        test: '1',
-      },
-    });
-  } catch (err) {
-    errorMessage.value = err.message;
-  } finally {
-    roomBusy.value = false;
-  }
-}
-
 async function joinMatchmaking() {
   roomBusy.value = true;
   errorMessage.value = '';
@@ -1143,7 +1116,6 @@ onBeforeUnmount(() => {
               @toggle-ready="toggleReady"
               @matchmaking-ready-locked="showMatchmakingReadyLockedNotice"
               @start-game="startGame"
-              @test-start="startTestGame"
               @cancel-matchmaking="cancelMatchmaking"
               @leave-room="leaveRoom"
               @return-game="returnToGame"
